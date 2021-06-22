@@ -380,6 +380,9 @@ static void svm_queue_exception(struct kvm_vcpu *vcpu)
 
 	kvm_deliver_exception_payload(vcpu);
 
+	if (sev_snp_queue_exception(vcpu))
+		return;
+
 	if (nr == BP_VECTOR && !nrips) {
 		unsigned long rip, old_rip = kvm_rip_read(vcpu);
 
@@ -3425,11 +3428,15 @@ static void svm_inject_nmi(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 
+	++vcpu->stat.nmi_injections;
+
+	if (sev_snp_inject_nmi(vcpu))
+		return;
+
 	svm->vmcb->control.event_inj = SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_NMI;
 	vcpu->arch.hflags |= HF_NMI_MASK;
 	if (!sev_es_guest(vcpu->kvm))
 		svm_set_intercept(svm, INTERCEPT_IRET);
-	++vcpu->stat.nmi_injections;
 }
 
 static void svm_set_irq(struct kvm_vcpu *vcpu)
@@ -3440,6 +3447,9 @@ static void svm_set_irq(struct kvm_vcpu *vcpu)
 
 	trace_kvm_inj_virq(vcpu->arch.interrupt.nr);
 	++vcpu->stat.irq_injections;
+
+	if (sev_snp_set_irq(vcpu))
+		return;
 
 	svm->vmcb->control.event_inj = vcpu->arch.interrupt.nr |
 		SVM_EVTINJ_VALID | SVM_EVTINJ_TYPE_INTR;
@@ -3476,6 +3486,9 @@ bool svm_nmi_blocked(struct kvm_vcpu *vcpu)
 
 	if (!gif_set(svm))
 		return true;
+
+	if (sev_snp_is_rinj_active(vcpu))
+		return sev_snp_nmi_blocked(vcpu);
 
 	if (is_guest_mode(vcpu) && nested_exit_on_nmi(svm))
 		return false;
@@ -3527,9 +3540,12 @@ bool svm_interrupt_blocked(struct kvm_vcpu *vcpu)
 	if (!gif_set(svm))
 		return true;
 
+	if (sev_snp_is_rinj_active(vcpu))
+		return sev_snp_interrupt_blocked(vcpu);
+
 	if (sev_es_guest(vcpu->kvm)) {
 		/*
-		 * SEV-ES guests to not expose RFLAGS. Use the VMCB interrupt mask
+		 * SEV-ES guests do not expose RFLAGS. Use the VMCB interrupt mask
 		 * bit to determine the state of the IF flag.
 		 */
 		if (!(vmcb->control.int_state & SVM_GUEST_INTERRUPT_MASK))
@@ -3750,6 +3766,8 @@ static void svm_cancel_injection(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct vmcb_control_area *control = &svm->vmcb->control;
+
+	sev_snp_cancel_injection(vcpu);
 
 	control->exit_int_info = control->event_inj;
 	control->exit_int_info_err = control->event_inj_err;

@@ -4188,3 +4188,203 @@ out:
 unlock:
 	write_unlock(&kvm->mmu_lock);
 }
+
+static void inject_hv(struct vcpu_svm *svm, struct hvdb *hvdb)
+{
+	svm->vmcb->control.event_inj = X86_TRAP_HV
+		| SVM_EVTINJ_TYPE_EXEPT
+		| SVM_EVTINJ_VALID;
+	svm->vmcb->control.event_inj_err = 0;
+
+	if (hvdb)
+		hvdb->events.no_further_signal = 1;
+}
+
+static void unmap_hvdb(struct kvm_vcpu *vcpu, struct kvm_host_map *map)
+{
+	if (!map->hva)
+		return;
+
+	kvm_vcpu_unmap(vcpu, map, true);
+}
+
+static struct hvdb *map_hvdb(struct kvm_vcpu *vcpu, struct kvm_host_map *map)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+
+	memset(map, 0, sizeof(*map));
+
+	if (!VALID_PAGE(svm->hvdb_gpa) ||
+	    kvm_vcpu_map(vcpu, gpa_to_gfn(svm->hvdb_gpa), map)) {
+		/* Unable to map #HV doorbell page from guest */
+		vcpu_unimpl(vcpu, "snp: error mapping #HV doorbell page [%#llx] from guest\n",
+			    svm->hvdb_gpa);
+
+		return NULL;
+	}
+
+	return map->hva;
+}
+
+bool sev_snp_is_rinj_active(struct kvm_vcpu *vcpu)
+{
+	struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+
+	return sev_snp_guest(vcpu->kvm) &&
+	       (sev->sev_features & SVM_SEV_FEAT_RESTRICTED_INJECTION);
+}
+
+bool sev_snp_queue_exception(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct kvm_host_map hvdb_map;
+	struct hvdb *hvdb;
+
+	if (!sev_snp_is_rinj_active(vcpu))
+		return false;
+
+	if (WARN_ONCE(vcpu->arch.exception.nr != X86_TRAP_HV,
+		      "restricted injection enabled, exception %u injection not supported\n",
+		      vcpu->arch.exception.nr))
+		return true;
+
+	/*
+	 * An intercept likely occurred during #HV delivery, so re-inject it
+	 * using the current HVDB pending event values.
+	 */
+	hvdb = map_hvdb(vcpu, &hvdb_map);
+
+	inject_hv(svm, hvdb);
+
+	unmap_hvdb(vcpu, &hvdb_map);
+
+	return true;
+}
+
+bool sev_snp_inject_nmi(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct kvm_host_map hvdb_map;
+	struct hvdb *hvdb;
+
+	if (!sev_snp_is_rinj_active(vcpu))
+		return false;
+
+	hvdb = map_hvdb(vcpu, &hvdb_map);
+	if (hvdb)
+		hvdb->events.nmi = 1;
+
+	inject_hv(svm, hvdb);
+
+	unmap_hvdb(vcpu, &hvdb_map);
+
+	return true;
+}
+
+bool sev_snp_set_irq(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct kvm_host_map hvdb_map;
+	struct hvdb *hvdb;
+
+	if (!sev_snp_is_rinj_active(vcpu))
+		return false;
+
+	hvdb = map_hvdb(vcpu, &hvdb_map);
+	if (hvdb)
+		hvdb->events.vector = vcpu->arch.interrupt.nr;
+
+	inject_hv(svm, hvdb);
+
+	unmap_hvdb(vcpu, &hvdb_map);
+
+	return true;
+}
+
+void sev_snp_cancel_injection(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct kvm_host_map hvdb_map;
+	struct hvdb *hvdb;
+
+	if (!sev_snp_is_rinj_active(vcpu))
+		return;
+
+	/*
+	 * Copy the information in the doorbell page into the event injeciton
+	 * fields to complete the cancellation flow.
+	 */
+	hvdb = map_hvdb(vcpu, &hvdb_map);
+	if (!hvdb)
+		return;
+
+	if (!hvdb->events.pending_events) {
+		/* No pending events, then event_inj field should be 0 */
+		WARN_ON_ONCE(svm->vmcb->control.event_inj);
+		goto out;
+	}
+
+	/* Copy info back into eventinj field (replaces #HV) */
+	if (hvdb->events.nmi)
+		svm->vmcb->control.event_inj = SVM_EVTINJ_VALID |
+					       SVM_EVTINJ_TYPE_NMI;
+	else if (hvdb->events.vector)
+		svm->vmcb->control.event_inj = hvdb->events.vector |
+					       SVM_EVTINJ_VALID |
+					       SVM_EVTINJ_TYPE_INTR;
+	else
+		WARN(1, "snp: canceling unsupported pending event\n");
+
+	hvdb->events.no_further_signal = 0;
+
+out:
+	unmap_hvdb(vcpu, &hvdb_map);
+}
+
+bool sev_snp_nmi_blocked(struct kvm_vcpu *vcpu)
+{
+	struct kvm_host_map hvdb_map;
+	struct hvdb *hvdb;
+	bool blocked;
+
+	WARN_ON_ONCE(!sev_snp_guest(vcpu->kvm));
+
+	/* Indicate interrupts are blocked if doorbell page can't be mapped */
+	hvdb = map_hvdb(vcpu, &hvdb_map);
+	if (!hvdb)
+		return true;
+
+	/* Indicate interrupts blocking based on doorbell NMI setting */
+	blocked = hvdb->events.nmi || hvdb->events.no_further_signal;
+
+	unmap_hvdb(vcpu, &hvdb_map);
+
+	return blocked;
+}
+
+bool sev_snp_interrupt_blocked(struct kvm_vcpu *vcpu)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct vmcb *vmcb = svm->vmcb;
+	struct kvm_host_map hvdb_map;
+	struct hvdb *hvdb;
+	bool blocked;
+
+	WARN_ON_ONCE(!sev_snp_guest(vcpu->kvm));
+
+	/* Check the interrupt mask in the VMCB */
+	if (!(vmcb->control.int_state & SVM_GUEST_INTERRUPT_MASK))
+		return true;
+
+	/* Indicate interrupts are blocked if doorbell page can't be mapped */
+	hvdb = map_hvdb(vcpu, &hvdb_map);
+	if (!hvdb)
+		return true;
+
+	/* Indicate interrupts blocked based on guest acknowledgement */
+	blocked = hvdb->events.vector != 0 || hvdb->events.no_further_signal;
+
+	unmap_hvdb(vcpu, &hvdb_map);
+
+	return blocked;
+}
