@@ -76,14 +76,14 @@ struct sev_es_runtime_data {
 	struct ghcb ghcb_page;
 
 	/* Physical storage for the per-CPU IST stack of the #VC handler */
-	char ist_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
+	char vc_ist_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
 
 	/*
 	 * Physical storage for the per-CPU fall-back stack of the #VC handler.
 	 * The fall-back stack is used when it is not safe to switch back to the
 	 * interrupted stack in the #VC entry code.
 	 */
-	char fallback_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
+	char vc_fallback_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
 
 	/*
 	 * Reserve one page per CPU as backup storage for the unencrypted GHCB.
@@ -149,12 +149,12 @@ static void __init setup_vc_stacks(int cpu)
 
 	/* Map #VC IST stack */
 	vaddr = CEA_ESTACK_BOT(&cea->estacks, VC);
-	pa    = __pa(data->ist_stack);
+	pa    = __pa(data->vc_ist_stack);
 	cea_set_pte((void *)vaddr, pa, PAGE_KERNEL);
 
 	/* Map VC fall-back stack */
 	vaddr = CEA_ESTACK_BOT(&cea->estacks, VC2);
-	pa    = __pa(data->fallback_stack);
+	pa    = __pa(data->vc_fallback_stack);
 	cea_set_pte((void *)vaddr, pa, PAGE_KERNEL);
 }
 
