@@ -19,7 +19,8 @@
 enum sev_feature_type {
 	SEV,
 	SEV_ES,
-	SEV_SNP
+	SEV_SNP,
+	SEV_SNP_RINJ,
 };
 
 #ifdef CONFIG_AMD_MEM_ENCRYPT

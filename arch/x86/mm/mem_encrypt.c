@@ -438,6 +438,7 @@ bool sev_feature_enabled(unsigned int type)
 	case SEV: return sev_status & MSR_AMD64_SEV_ENABLED;
 	case SEV_ES: return sev_status & MSR_AMD64_SEV_ES_ENABLED;
 	case SEV_SNP: return sev_status & MSR_AMD64_SEV_SNP_ENABLED;
+	case SEV_SNP_RINJ: return sev_status & MSR_AMD64_SEV_RINJ_ENABLED;
 	default: return false;
 	}
 }
