@@ -199,6 +199,9 @@ struct vcpu_svm {
 		DECLARE_BITMAP(write, MAX_DIRECT_ACCESS_MSRS);
 	} shadow_msr_intercept;
 
+	/* Debug support */
+	unsigned long run_count;
+
 	/* SEV-ES support */
 	struct sev_es_save_area *vmsa;
 	hpa_t vmsa_pa;
@@ -476,6 +479,7 @@ void svm_set_gif(struct vcpu_svm *svm, bool value);
 int svm_invoke_exit_handler(struct kvm_vcpu *vcpu, u64 exit_code);
 void set_msr_interception(struct kvm_vcpu *vcpu, u32 *msrpm, u32 msr,
 			  int read, int write);
+void dump_vmcb(struct kvm_vcpu *vcpu);
 
 /* nested.c */
 

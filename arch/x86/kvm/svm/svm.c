@@ -36,6 +36,7 @@
 #include <asm/spec-ctrl.h>
 #include <asm/cpu_device_id.h>
 #include <asm/traps.h>
+#include <asm/sev.h>
 
 #include <asm/virtext.h>
 #include "trace.h"
@@ -1230,6 +1231,8 @@ static void init_vmcb(struct kvm_vcpu *vcpu)
 	control->iopm_base_pa = __sme_set(iopm_base);
 	control->msrpm_base_pa = __sme_set(__pa(svm->msrpm));
 	control->int_ctl = V_INTR_MASKING_MASK;
+
+	save->dbgctl = 1;
 
 	init_seg(&save->es);
 	init_seg(&save->ss);
@@ -3167,21 +3170,45 @@ static int (*const svm_exit_handlers[])(struct kvm_vcpu *vcpu) = {
 	[SVM_EXIT_VMGEXIT]			= sev_handle_vmgexit,
 };
 
-static void dump_vmcb(struct kvm_vcpu *vcpu)
+static int reclaim_firmware_page(struct page *page)
+{
+	struct sev_data_snp_page_reclaim *reclaim;
+	int ret, error;
+
+	reclaim = kzalloc(sizeof(*reclaim), GFP_KERNEL);
+	if (!reclaim)
+		return -ENOMEM;
+
+	reclaim->paddr = __sme_page_pa(page) | RMP_PG_SIZE_4K;
+	ret = snp_guest_page_reclaim(reclaim, &error);
+	if (ret) {
+		pr_err("*** DEBUG: %s:%u:%s - page reclaim failed, ret=%d, error=%d\n", __FILE__, __LINE__, __func__, ret, error);
+		goto out;
+	}
+
+	ret = rmp_make_shared(page_to_pfn(page), PG_LEVEL_4K);
+	if (ret)
+		pr_err("*** DEBUG: %s:%u:%s - rmp_make_shared failed, ret=%d\n", __FILE__, __LINE__, __func__, ret);
+
+out:
+	kfree(reclaim);
+
+	return ret;
+}
+
+void dump_vmcb(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
 	struct vmcb_control_area *control = &svm->vmcb->control;
 	struct vmcb_save_area *save = &svm->vmcb->save;
 	struct vmcb_save_area *save01 = &svm->vmcb01.ptr->save;
-
-	if (!dump_invalid_vmcb) {
-		pr_warn_ratelimited("set kvm_amd.dump_invalid_vmcb=1 to dump internal KVM state.\n");
-		return;
-	}
+	char buffer[sizeof(control->insn_bytes) * 4], *bufptr;
+	int i, buflen;
+	bool do_free;
 
 	pr_err("VMCB %p, last attempted VMRUN on CPU %d\n",
 	       svm->current_vmcb->ptr, vcpu->arch.last_vmentry_cpu);
-	pr_err("VMCB Control Area:\n");
+	pr_err("VMCB Control Area - vCPU%u (run_count=%lu):\n", vcpu->vcpu_id, svm->run_count);
 	pr_err("%-20s%04x\n", "cr_read:", control->intercepts[INTERCEPT_CR] & 0xffff);
 	pr_err("%-20s%04x\n", "cr_write:", control->intercepts[INTERCEPT_CR] >> 16);
 	pr_err("%-20s%04x\n", "dr_read:", control->intercepts[INTERCEPT_DR] & 0xffff);
@@ -3214,10 +3241,112 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 	pr_err("%-20s%08x\n", "event_inj_err:", control->event_inj_err);
 	pr_err("%-20s%lld\n", "virt_ext:", control->virt_ext);
 	pr_err("%-20s%016llx\n", "next_rip:", control->next_rip);
+	pr_err("%-20s%hhd\n", "insn_len:", control->insn_len);
+	bufptr = buffer;
+	buflen = sizeof(buffer);
+	for (i = 0; i < sizeof(control->insn_bytes); i++)
+		bufptr += sprintf(bufptr, "%02hhx ", control->insn_bytes[i]);
+	pr_err("%-20s%s\n", "insn_bytes:", buffer);
 	pr_err("%-20s%016llx\n", "avic_backing_page:", control->avic_backing_page);
 	pr_err("%-20s%016llx\n", "avic_logical_id:", control->avic_logical_id);
 	pr_err("%-20s%016llx\n", "avic_physical_id:", control->avic_physical_id);
 	pr_err("%-20s%016llx\n", "vmsa_pa:", control->vmsa_pa);
+
+	do_free = false;
+	if (vcpu->arch.guest_state_protected) {
+		struct kvm_sev_info *sev = &to_kvm_svm(vcpu->kvm)->sev_info;
+		struct page *save_page;
+		unsigned long paddr;
+		int ret, error;
+
+		save_page = alloc_page(GFP_KERNEL);
+		if (!save_page)
+			return;
+		save = page_address(save_page);
+		save01 = save;
+		paddr = __psp_pa(save);
+		pr_err("*** DEBUG: %s:%u:%s - unencrypted VMSA page at 0x%px (%#lx)\n", __FILE__, __LINE__, __func__, save, paddr);
+
+		wbinvd_on_all_cpus();
+
+		if (sev_snp_guest(vcpu->kvm)) {
+			struct sev_data_snp_dbg *dbg;
+
+			pr_err("*** DEBUG: %s:%u:%s - Using SEV_CMD_SNP_DBG_DECRYPT to decrypt VMSA\n", __FILE__, __LINE__, __func__);
+			dbg = kzalloc(sizeof(*dbg), GFP_KERNEL);
+			if (!dbg) {
+				__free_page(save_page);
+				return;
+			}
+
+			/* Transition destination page to a firmware page */
+			ret = rmp_make_private(page_to_pfn(save_page), 0, PG_LEVEL_4K, 0, true);
+			if (ret) {
+				pr_err("*** DEBUG: %s:%u:%s - rmp_make_private error, ret=%d\n", __FILE__, __LINE__, __func__, ret);
+				__free_page(save_page);
+				kfree(dbg);
+				return;
+			}
+
+			dbg->gctx_paddr = __sme_pa(sev->snp_context);
+			dbg->src_addr = svm->vmcb->control.vmsa_pa;
+			dbg->dst_addr = paddr;
+			dbg->len = PAGE_SIZE;
+
+			ret = snp_guest_dbg_decrypt(dbg, &error);
+			if (ret) {
+				pr_err("*** DEBUG: %s:%u:%s - SEV_CMD_SNP_DBG_DECRYPT error, ret=%d, error=%d\n", __FILE__, __LINE__, __func__, ret, error);
+
+				ret = reclaim_firmware_page(save_page);
+				if (ret)
+					pr_err("*** DEBUG: %s:%u:%s - leaking page\n", __FILE__, __LINE__, __func__);
+				else
+					__free_page(save_page);
+
+				kfree(dbg);
+				return;
+			}
+
+			ret = reclaim_firmware_page(save_page);
+			if (ret)
+				pr_err("*** DEBUG: %s:%u:%s - leaking page\n", __FILE__, __LINE__, __func__);
+			else
+				do_free = true;
+
+			kfree(dbg);
+		} else {
+			struct sev_data_dbg *dbg;
+
+			pr_err("*** DEBUG: %s:%u:%s - Using SEV_CMD_DBG_DECRYPT to decrypt VMSA\n", __FILE__, __LINE__, __func__);
+
+			dbg = kzalloc(sizeof(*dbg), GFP_KERNEL);
+			if (!dbg) {
+				__free_page(save_page);
+				return;
+			}
+
+			dbg->handle = sev->handle;
+			dbg->src_addr = svm->vmcb->control.vmsa_pa;
+			dbg->dst_addr = paddr;
+			dbg->len = PAGE_SIZE;
+
+			ret = sev_guest_dbg_decrypt(dbg, &error);
+			if (ret) {
+				pr_err("*** DEBUG: %s:%u:%s - SEV_CMD_DBG_DECRYPT error, ret=%d, error=%d\n", __FILE__, __LINE__, __func__, ret, error);
+				__free_page(save_page);
+				kfree(dbg);
+				return;
+			}
+
+			do_free = true;
+
+			kfree(dbg);
+		}
+	} else if (sev_es_guest(vcpu->kvm)) {
+		save = (struct vmcb_save_area *)svm->vmsa;
+		save01 = save;
+	}
+
 	pr_err("VMCB State Save Area:\n");
 	pr_err("%-5s s: %04x a: %04x l: %08x b: %016llx\n",
 	       "es:",
@@ -3288,6 +3417,49 @@ static void dump_vmcb(struct kvm_vcpu *vcpu)
 	pr_err("%-15s %016llx %-13s %016llx\n",
 	       "excp_from:", save->last_excp_from,
 	       "excp_to:", save->last_excp_to);
+
+	if (sev_es_guest(vcpu->kvm)) {
+		struct sev_es_save_area *vmsa = (struct sev_es_save_area *)save;
+
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rax:", vmsa->rax, "rbx:", vmsa->rbx);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rcx:", vmsa->rcx, "rdx:", vmsa->rdx);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rsi:", vmsa->rsi, "rdi:", vmsa->rdi);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "rbp:", vmsa->rbp, "rsp:", vmsa->rsp);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r8:", vmsa->r8, "r9:", vmsa->r9);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r10:", vmsa->r10, "r11:", vmsa->r11);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r12:", vmsa->r12, "r13:", vmsa->r13);
+		pr_err("%-15s %016llx %-13s %016llx\n",
+		       "r14:", vmsa->r14, "r15:", vmsa->r15);
+	} else {
+		pr_err("%-15s %016llx %-13s %016lx\n",
+		       "rax:", save->rax, "rbx:", vcpu->arch.regs[VCPU_REGS_RBX]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "rcx:", vcpu->arch.regs[VCPU_REGS_RCX], "rdx:", vcpu->arch.regs[VCPU_REGS_RDX]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "rsi:", vcpu->arch.regs[VCPU_REGS_RSI], "rdi:", vcpu->arch.regs[VCPU_REGS_RDI]);
+		pr_err("%-15s %016lx %-13s %016llx\n",
+		       "rbp:", vcpu->arch.regs[VCPU_REGS_RBP], "rsp:", save->rsp);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r8:", vcpu->arch.regs[VCPU_REGS_R8], "r9:", vcpu->arch.regs[VCPU_REGS_R9]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r10:", vcpu->arch.regs[VCPU_REGS_R10], "r11:", vcpu->arch.regs[VCPU_REGS_R11]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r12:", vcpu->arch.regs[VCPU_REGS_R12], "r13:", vcpu->arch.regs[VCPU_REGS_R13]);
+		pr_err("%-15s %016lx %-13s %016lx\n",
+		       "r14:", vcpu->arch.regs[VCPU_REGS_R14], "r15:", vcpu->arch.regs[VCPU_REGS_R15]);
+	}
+
+	if (do_free) {
+		wbinvd_on_all_cpus();
+		__free_page(virt_to_page(save));
+	}
 }
 
 static int svm_handle_invalid_exit(struct kvm_vcpu *vcpu, u64 exit_code)
@@ -3836,6 +4008,7 @@ static __no_kcsan fastpath_t svm_vcpu_run(struct kvm_vcpu *vcpu)
 
 	trace_kvm_entry(vcpu);
 
+	svm->run_count++;
 	if (svm->vmcb->control.event_inj) {
 		trace_kvm_inj_event_inj_vcpu_run(vcpu, svm->vmcb->control.event_inj);
 		trace_event_inj = true;

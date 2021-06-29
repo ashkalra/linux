@@ -72,6 +72,10 @@ module_param_named(sev_snp, sev_snp_enabled, bool, 0444);
 #define AP_RESET_HOLD_NAE_EVENT		1
 #define AP_RESET_HOLD_MSR_PROTO		2
 
+/* enable/disable VMCB dump debug support */
+static int dump_all_vmcbs = false;
+module_param(dump_all_vmcbs, int, 0644);
+
 static u8 sev_enc_bit;
 static DECLARE_RWSEM(sev_deactivate_lock);
 static DEFINE_MUTEX(sev_bitmap_lock);
@@ -710,6 +714,13 @@ static int sev_es_sync_vmsa(struct vcpu_svm *svm)
 	 * all vCPUs, so just save each time.
 	 */
 	sev->sev_features = save->sev_features;
+
+	if (dump_all_vmcbs) {
+		struct kvm_vcpu *vcpu = &svm->vcpu;
+
+		pr_err("*** DEBUG: %s:%u:%s - vcpu%u before encryption\n", __FILE__, __LINE__, __func__, vcpu->vcpu_id);
+		dump_vmcb(vcpu);
+	}
 
 	return 0;
 }
@@ -2295,6 +2306,17 @@ void sev_vm_destroy(struct kvm *kvm)
 	struct list_head *head = &sev->regions_list;
 	struct list_head *pos, *q;
 
+	if (dump_all_vmcbs) {
+		unsigned int i;
+
+		for (i = 0; i < kvm->created_vcpus; i++) {
+			struct kvm_vcpu *vcpu = kvm->vcpus[i];
+
+			pr_err("*** DEBUG: %s:%u:%s - vcpu%u before destroy\n", __FILE__, __LINE__, __func__, vcpu->vcpu_id);
+			dump_vmcb(vcpu);
+		}
+	}
+
 	if (!sev_guest(kvm))
 		return;
 
@@ -2574,12 +2596,6 @@ static void dump_ghcb(struct vcpu_svm *svm)
 
 	ghcb = map.hva;
 
-	/* Re-use the dump_invalid_vmcb module parameter */
-	if (!dump_invalid_vmcb) {
-		pr_warn_ratelimited("set kvm_amd.dump_invalid_vmcb=1 to dump internal KVM state.\n");
-		goto e_unmap;
-	}
-
 	nbits = sizeof(ghcb->save.valid_bitmap) * 8;
 
 	pr_err("GHCB (GPA=%016llx):\n", svm->vmcb->control.ghcb_gpa);
@@ -2593,7 +2609,6 @@ static void dump_ghcb(struct vcpu_svm *svm)
 	       ghcb->save.sw_scratch, ghcb_sw_scratch_is_valid(ghcb));
 	pr_err("%-20s%*pb\n", "valid_bitmap", nbits, ghcb->save.valid_bitmap);
 
-e_unmap:
 	svm_unmap_ghcb(svm, &map, token);
 }
 
@@ -3726,6 +3741,7 @@ static int sev_handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 		fallthrough;
 	}
 	default:
+		dump_vmcb(&svm->vcpu);
 		ret = -EINVAL;
 	}
 
@@ -3749,6 +3765,7 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 
 	if (!ghcb_gpa) {
 		vcpu_unimpl(vcpu, "vmgexit: GHCB gpa is not set\n");
+		dump_vmcb(vcpu);
 		return -EINVAL;
 	}
 
@@ -4010,6 +4027,8 @@ void sev_vcpu_deliver_sipi_vector(struct kvm_vcpu *vcpu, u8 vector)
 	default:
 		break;
 	}
+
+	svm->run_count = 0;
 }
 
 struct page *snp_safe_alloc_page(struct kvm_vcpu *vcpu)

@@ -1720,6 +1720,12 @@ int snp_guest_ext_guest_request(struct sev_data_snp_guest_request *data,
 }
 EXPORT_SYMBOL_GPL(snp_guest_ext_guest_request);
 
+int sev_guest_dbg_decrypt(struct sev_data_dbg *data, int *error)
+{
+	return sev_do_cmd(SEV_CMD_DBG_DECRYPT, data, error);
+}
+EXPORT_SYMBOL_GPL(sev_guest_dbg_decrypt);
+
 static void sev_exit(struct kref *ref)
 {
 	misc_deregister(&misc_dev->misc);

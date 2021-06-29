@@ -848,6 +848,20 @@ int sev_guest_activate(struct sev_data_activate *data, int *error);
 int sev_guest_df_flush(int *error);
 
 /**
+ * sev_guest_dbg_decrypt - perform SEV DBG_DECRYPT command
+ *
+ * @sev_ret: sev command return code
+ *
+ * Returns:
+ * 0 if the sev successfully processed the command
+ * -%ENODEV    if the sev device is not available
+ * -%ENOTSUPP  if the sev does not support SEV
+ * -%ETIMEDOUT if the sev command timed out
+ * -%EIO       if the sev returned a non-zero return code
+ */
+int sev_guest_dbg_decrypt(struct sev_data_dbg *data, int *error);
+
+/**
  * sev_guest_decommission - perform SEV DECOMMISSION command
  *
  * @decommission: sev_data_decommission structure to be processed
