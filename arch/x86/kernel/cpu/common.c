@@ -59,6 +59,7 @@
 #include <asm/cpu_device_id.h>
 #include <asm/uv/uv.h>
 #include <asm/sigframe.h>
+#include <asm/sev.h>
 
 #include "cpu.h"
 
@@ -1939,6 +1940,13 @@ void cpu_init_exception_handling(void)
 
 	/* Finally load the IDT */
 	load_current_idt();
+
+	/*
+	 * Register a #HV doorbell page if running as an SNP guest with
+	 * restricted injection (this is for the APs, the BSP registers
+	 * its doorbell page in sev_init_exception_handling()).
+	 */
+	snp_set_hvdb();
 }
 
 /*

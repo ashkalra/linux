@@ -44,6 +44,7 @@
 #include <asm/setup.h>
 #include <asm/apic.h>
 #include <asm/iommu.h>
+#include <asm/i8259.h>
 
 #include "sev-internal.h"
 
@@ -73,6 +74,12 @@ static unsigned long rmptable_end __ro_after_init;
 
 /* #HV handler runtime per-CPU data */
 struct sev_hvdb_runtime_data {
+	/*
+	 * SEV-SNP requires a doorbell page when the restricted injection
+	 * feature is enabled.
+	 */
+	struct hvdb hvdb_page;
+
 	/* Physical storage for the per-CPU IST stack of the #HV handler */
 	char hv_ist_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
 
@@ -1339,11 +1346,82 @@ static void __init init_ghcb(int cpu)
 	data->snp_ghcb_registered = false;
 }
 
+static void __init init_hvdb(int cpu)
+{
+	struct sev_hvdb_runtime_data *hvdb_data;
+	struct sev_es_runtime_data *data;
+	int err;
+
+	if (!sev_feature_enabled(SEV_SNP_RINJ))
+		return;
+
+	data = per_cpu(runtime_data, cpu);
+	hvdb_data = data->hvdb_data;
+
+	err = early_set_memory_decrypted((unsigned long)&hvdb_data->hvdb_page,
+					 sizeof(hvdb_data->hvdb_page));
+	if (err)
+		panic("Can't map HV doorbell page unencrypted");
+
+	memset(&hvdb_data->hvdb_page, 0, sizeof(hvdb_data->hvdb_page));
+}
+
+static void __snp_set_hvdb(struct ghcb *ghcb)
+{
+	struct sev_hvdb_runtime_data *hvdb_data;
+	struct sev_es_runtime_data *data;
+	unsigned long hvdb_pa;
+
+	WARN_ON(!irqs_disabled());
+
+	data = this_cpu_read(runtime_data);
+	hvdb_data = data->hvdb_data;
+
+	hvdb_pa = __pa(&hvdb_data->hvdb_page);
+
+	/* Register the BSP #HV doorbell page */
+	vc_ghcb_invalidate(ghcb);
+	ghcb_set_sw_exit_code(ghcb, SVM_VMGEXIT_HVDB_PAGE);
+	ghcb_set_sw_exit_info_1(ghcb, SVM_VMGEXIT_HVDB_SET);
+	ghcb_set_sw_exit_info_2(ghcb, hvdb_pa);
+
+	sev_es_wr_ghcb_msr(__pa(ghcb));
+	VMGEXIT();
+
+	if (!ghcb_sw_exit_info_1_is_valid(ghcb) ||
+	    lower_32_bits(ghcb->save.sw_exit_info_1))
+		panic("Set SNP #HV Doorbell Page error\n");
+
+	if (ghcb_get_sw_exit_info_2_if_valid(ghcb) != hvdb_pa)
+		panic("Set SNP #HV Doorbell Page invalid response\n");
+}
+
+void snp_set_hvdb(void)
+{
+	struct ghcb_state state;
+	unsigned long flags;
+	struct ghcb *ghcb;
+
+	if (!sev_feature_enabled(SEV_SNP_RINJ))
+		return;
+
+	local_irq_save(flags);
+
+	ghcb = __sev_get_ghcb(&state);
+
+	__snp_set_hvdb(ghcb);
+
+	__sev_put_ghcb(&state);
+
+	local_irq_restore(flags);
+}
+
 void __init sev_init_exception_handling(void)
 {
 	int cpu;
 
 	BUILD_BUG_ON(offsetof(struct sev_es_runtime_data, ghcb_page) % PAGE_SIZE);
+	BUILD_BUG_ON(offsetof(struct sev_hvdb_runtime_data, hvdb_page) % PAGE_SIZE);
 
 	if (!sev_es_active())
 		return;
@@ -1358,7 +1436,16 @@ void __init sev_init_exception_handling(void)
 	for_each_possible_cpu(cpu) {
 		alloc_runtime_data(cpu);
 		init_ghcb(cpu);
+		init_hvdb(cpu);
 		setup_exception_stacks(cpu);
+	}
+
+	if (sev_feature_enabled(SEV_SNP_RINJ)) {
+		if (unlikely(boot_ghcb == NULL && !setup_ghcb()))
+			sev_es_terminate(0, GHCB_SEV_ES_GEN_REQ);
+		__snp_set_hvdb(boot_ghcb);
+
+		legacy_pic = &null_legacy_pic;
 	}
 
 	sev_es_setup_play_dead();
