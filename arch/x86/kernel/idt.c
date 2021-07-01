@@ -104,6 +104,7 @@ static const __initconst struct idt_data def_idts[] = {
 #endif
 
 #ifdef CONFIG_AMD_MEM_ENCRYPT
+	ISTG(X86_TRAP_HV,		asm_exc_hv_injection, IST_INDEX_HV),
 	ISTG(X86_TRAP_VC,		asm_exc_vmm_communication, IST_INDEX_VC),
 #endif
 

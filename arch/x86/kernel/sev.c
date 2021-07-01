@@ -71,6 +71,19 @@ static u64 snp_secrets_phys;
 static unsigned long rmptable_start __ro_after_init;
 static unsigned long rmptable_end __ro_after_init;
 
+/* #HV handler runtime per-CPU data */
+struct sev_hvdb_runtime_data {
+	/* Physical storage for the per-CPU IST stack of the #HV handler */
+	char hv_ist_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
+
+	/*
+	 * Physical storage for the per-CPU fall-back stack of the #HV handler.
+	 * The fall-back stack is used when it is not safe to switch back to the
+	 * interrupted stack in the #HV entry code.
+	 */
+	char hv_fallback_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
+};
+
 /* #VC handler runtime per-CPU data */
 struct sev_es_runtime_data {
 	struct ghcb ghcb_page;
@@ -123,6 +136,12 @@ struct sev_es_runtime_data {
 	 * not registered then sev_es_get_ghcb() will perform the registration.
 	 */
 	bool snp_ghcb_registered;
+
+	/*
+	 * #HV doorbell data. It is only allocated when restricted injection
+	 * is enabled.
+	 */
+	struct sev_hvdb_runtime_data *hvdb_data;
 };
 
 struct ghcb_state {
@@ -137,7 +156,7 @@ static DEFINE_PER_CPU(struct sev_es_save_area *, snp_vmsa);
 /* Needed in vc_early_forward_exception */
 void do_early_exception(struct pt_regs *regs, int trapnr);
 
-static void __init setup_vc_stacks(int cpu)
+static void __init setup_exception_stacks(int cpu)
 {
 	struct sev_es_runtime_data *data;
 	struct cpu_entry_area *cea;
@@ -155,6 +174,19 @@ static void __init setup_vc_stacks(int cpu)
 	/* Map VC fall-back stack */
 	vaddr = CEA_ESTACK_BOT(&cea->estacks, VC2);
 	pa    = __pa(data->vc_fallback_stack);
+	cea_set_pte((void *)vaddr, pa, PAGE_KERNEL);
+
+	if (!sev_feature_enabled(SEV_SNP_RINJ))
+		return;
+
+	/* Map #HV IST stack */
+	vaddr = CEA_ESTACK_BOT(&cea->estacks, HV);
+	pa    = __pa(data->hvdb_data->hv_ist_stack);
+	cea_set_pte((void *)vaddr, pa, PAGE_KERNEL);
+
+	/* Map HV fall-back stack */
+	vaddr = CEA_ESTACK_BOT(&cea->estacks, HV2);
+	pa    = __pa(data->hvdb_data->hv_fallback_stack);
 	cea_set_pte((void *)vaddr, pa, PAGE_KERNEL);
 }
 
@@ -1275,6 +1307,16 @@ static void __init alloc_runtime_data(int cpu)
 	if (!data)
 		panic("Can't allocate SEV-ES runtime data");
 
+	if (sev_feature_enabled(SEV_SNP_RINJ)) {
+		struct sev_hvdb_runtime_data *hvdb_data;
+
+		hvdb_data = memblock_alloc(sizeof(*hvdb_data), PAGE_SIZE);
+		if (!hvdb_data)
+			panic("Can't allocate #HV runtime data");
+
+		data->hvdb_data = hvdb_data;
+	}
+
 	per_cpu(runtime_data, cpu) = data;
 }
 
@@ -1297,7 +1339,7 @@ static void __init init_ghcb(int cpu)
 	data->snp_ghcb_registered = false;
 }
 
-void __init sev_es_init_vc_handling(void)
+void __init sev_init_exception_handling(void)
 {
 	int cpu;
 
@@ -1316,7 +1358,7 @@ void __init sev_es_init_vc_handling(void)
 	for_each_possible_cpu(cpu) {
 		alloc_runtime_data(cpu);
 		init_ghcb(cpu);
-		setup_vc_stacks(cpu);
+		setup_exception_stacks(cpu);
 	}
 
 	sev_es_setup_play_dead();
@@ -2593,3 +2635,70 @@ int rmp_make_shared(u64 pfn, enum pg_level level)
 	return rmpupdate(pfn, &val);
 }
 EXPORT_SYMBOL_GPL(rmp_make_shared);
+
+static bool hv_raw_handle_exception(struct pt_regs *regs)
+{
+	return false;
+}
+
+static __always_inline bool on_hv_fallback_stack(struct pt_regs *regs)
+{
+	unsigned long sp = (unsigned long)regs;
+
+	return (sp >= __this_cpu_ist_bottom_va(HV2) && sp < __this_cpu_ist_top_va(HV2));
+}
+
+/*
+ * Runtime #HV exception handler when raised from kernel mode. Runs in NMI mode
+ * and will panic when an error happens.
+ */
+DEFINE_IDTENTRY_HV_KERNEL(exc_hv_injection)
+{
+	irqentry_state_t irq_state;
+
+	if (unlikely(on_hv_fallback_stack(regs))) {
+		instrumentation_begin();
+		panic("Can't handle #HV exception from unsupported context\n");
+		instrumentation_end();
+	}
+
+	irq_state = irqentry_nmi_enter(regs);
+	instrumentation_begin();
+
+	if (!hv_raw_handle_exception(regs)) {
+		pr_emerg("PANIC: Unhandled #HV exception in kernel space\n");
+
+		/* Show some debug info */
+		show_regs(regs);
+
+		/* Ask hypervisor to sev_es_terminate */
+		sev_es_terminate(0, GHCB_SEV_ES_GEN_REQ);
+
+		panic("Returned from Terminate-Request to Hypervisor\n");
+	}
+
+	instrumentation_end();
+	irqentry_nmi_exit(regs, irq_state);
+}
+
+/*
+ * Runtime #HV exception handler when raised from user mode. Runs in IRQ mode
+ * and will kill the current task with SIGBUS when an error happens.
+ */
+DEFINE_IDTENTRY_HV_USER(exc_hv_injection)
+{
+	irqentry_enter_from_user_mode(regs);
+	instrumentation_begin();
+
+	if (!hv_raw_handle_exception(regs)) {
+		/*
+		 * Do not kill the machine if user-space triggered the
+		 * exception. Send SIGBUS instead and let user-space deal
+		 * with it.
+		 */
+		force_sig_fault(SIGBUS, BUS_OBJERR, (void __user *)0);
+	}
+
+	instrumentation_end();
+	irqentry_exit_to_user_mode(regs);
+}

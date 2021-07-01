@@ -303,6 +303,18 @@ static __always_inline void __##func(struct pt_regs *regs)
 	__visible void noist_##func(struct pt_regs *regs)
 
 /**
+ * DECLARE_IDTENTRY_HV - Declare functions for the HV entry point
+ * @vector:	Vector number (ignored for C)
+ * @func:	Function name of the entry point
+ *
+ * Maps to DECLARE_IDTENTRY_RAW, but declares also the user C handler.
+ */
+#define DECLARE_IDTENTRY_HV(vector, func)				\
+	DECLARE_IDTENTRY_RAW(vector, func);				\
+	__visible noinstr void kernel_##func(struct pt_regs *regs);	\
+	__visible noinstr void   user_##func(struct pt_regs *regs)
+
+/**
  * DECLARE_IDTENTRY_VC - Declare functions for the VC entry point
  * @vector:	Vector number (ignored for C)
  * @func:	Function name of the entry point
@@ -353,6 +365,26 @@ static __always_inline void __##func(struct pt_regs *regs)
  */
 #define DEFINE_IDTENTRY_DF(func)					\
 	DEFINE_IDTENTRY_RAW_ERRORCODE(func)
+
+/**
+ * DEFINE_IDTENTRY_HV_KERNEL - Emit code for HV injection handler
+ *			       when raised from kernel mode
+ * @func:	Function name of the entry point
+ *
+ * Maps to DEFINE_IDTENTRY_RAW
+ */
+#define DEFINE_IDTENTRY_HV_KERNEL(func)					\
+	DEFINE_IDTENTRY_RAW(kernel_##func)
+
+/**
+ * DEFINE_IDTENTRY_HV_USER - Emit code for HV injection handler
+ *			     when raised from user mode
+ * @func:	Function name of the entry point
+ *
+ * Maps to DEFINE_IDTENTRY_RAW
+ */
+#define DEFINE_IDTENTRY_HV_USER(func)					\
+	DEFINE_IDTENTRY_RAW(user_##func)
 
 /**
  * DEFINE_IDTENTRY_VC_KERNEL - Emit code for VMM communication handler
@@ -459,6 +491,9 @@ __visible noinstr void func(struct pt_regs *regs,			\
 
 # define DECLARE_IDTENTRY_XENCB(vector, func)				\
 	DECLARE_IDTENTRY(vector, func)
+
+# define DECLARE_IDTENTRY_HV(vector, func)				\
+	idtentry_hv vector asm_##func func
 
 # define DECLARE_IDTENTRY_VC(vector, func)				\
 	idtentry_vc vector asm_##func func
@@ -615,8 +650,11 @@ DECLARE_IDTENTRY_DF(X86_TRAP_DF,	exc_double_fault);
 DECLARE_IDTENTRY_RAW_ERRORCODE(X86_TRAP_DF,	xenpv_exc_double_fault);
 #endif
 
-/* #VC */
 #ifdef CONFIG_AMD_MEM_ENCRYPT
+/* #HV */
+DECLARE_IDTENTRY_HV(X86_TRAP_HV,	exc_hv_injection);
+
+/* #VC */
 DECLARE_IDTENTRY_VC(X86_TRAP_VC,	exc_vmm_communication);
 #endif
 
