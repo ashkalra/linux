@@ -4191,7 +4191,7 @@ unlock:
 
 static void inject_hv(struct vcpu_svm *svm, struct hvdb *hvdb)
 {
-	svm->vmcb->control.event_inj = X86_TRAP_HV
+	svm->vmcb->control.event_inj = HV_VECTOR
 		| SVM_EVTINJ_TYPE_EXEPT
 		| SVM_EVTINJ_VALID;
 	svm->vmcb->control.event_inj_err = 0;
@@ -4243,7 +4243,7 @@ bool sev_snp_queue_exception(struct kvm_vcpu *vcpu)
 	if (!sev_snp_is_rinj_active(vcpu))
 		return false;
 
-	if (WARN_ONCE(vcpu->arch.exception.nr != X86_TRAP_HV,
+	if (WARN_ONCE(vcpu->arch.exception.nr != HV_VECTOR,
 		      "restricted injection enabled, exception %u injection not supported\n",
 		      vcpu->arch.exception.nr))
 		return true;
@@ -4310,6 +4310,12 @@ void sev_snp_cancel_injection(struct kvm_vcpu *vcpu)
 	if (!sev_snp_is_rinj_active(vcpu))
 		return;
 
+	if (!svm->vmcb->control.event_inj)
+		return;
+
+	if ((svm->vmcb->control.event_inj & SVM_EVTINJ_VEC_MASK) != HV_VECTOR)
+		return;
+
 	/*
 	 * Copy the information in the doorbell page into the event injeciton
 	 * fields to complete the cancellation flow.
@@ -4335,6 +4341,7 @@ void sev_snp_cancel_injection(struct kvm_vcpu *vcpu)
 	else
 		WARN(1, "snp: canceling unsupported pending event\n");
 
+	hvdb->events.vector = 0;
 	hvdb->events.no_further_signal = 0;
 
 out:
