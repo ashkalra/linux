@@ -44,7 +44,6 @@
 #include <asm/setup.h>
 #include <asm/apic.h>
 #include <asm/iommu.h>
-#include <asm/i8259.h>
 
 #include "sev-internal.h"
 
@@ -1444,8 +1443,6 @@ void __init sev_init_exception_handling(void)
 		if (unlikely(boot_ghcb == NULL && !setup_ghcb()))
 			sev_es_terminate(0, GHCB_SEV_ES_GEN_REQ);
 		__snp_set_hvdb(boot_ghcb);
-
-		legacy_pic = &null_legacy_pic;
 	}
 
 	sev_es_setup_play_dead();
