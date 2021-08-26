@@ -44,6 +44,7 @@
 #include <asm/setup.h>
 #include <asm/apic.h>
 #include <asm/iommu.h>
+#include <asm/desc.h>
 
 #include "sev-internal.h"
 
@@ -88,6 +89,12 @@ struct sev_hvdb_runtime_data {
 	 * interrupted stack in the #HV entry code.
 	 */
 	char hv_fallback_stack[EXCEPTION_STKSZ] __aligned(PAGE_SIZE);
+
+	/*
+	 * Indication that an event is pending that was not processed because
+	 * interrupts were disabled.
+	 */
+	bool hv_pending_event;
 };
 
 /* #VC handler runtime per-CPU data */
@@ -2720,9 +2727,176 @@ int rmp_make_shared(u64 pfn, enum pg_level level)
 }
 EXPORT_SYMBOL_GPL(rmp_make_shared);
 
+static bool hv_is_spurious_interrupt(gate_desc *gate)
+{
+	return !gate_offset(gate) || !gate->bits.p ||
+	       (gate->bits.type != GATE_INTERRUPT && gate->bits.type != GATE_TRAP);
+}
+
+static gate_desc *hv_get_gate_desc(unsigned int vector)
+{
+	struct desc_ptr idt;
+
+	store_idt(&idt);
+
+	return (gate_desc *)idt.address + vector;
+}
+
 static bool hv_raw_handle_exception(struct pt_regs *regs)
 {
-	return false;
+	struct sev_hvdb_runtime_data *hvdb_data;
+	struct sev_es_runtime_data *data;
+	struct hvdb_events events;
+	u16 *pending_events;
+
+	data = this_cpu_read(runtime_data);
+	if (WARN_ON(!data))
+		return false;
+
+	hvdb_data = data->hvdb_data;
+	if (WARN_ON(!hvdb_data))
+		return false;
+
+	hvdb_data->hv_pending_event = true;
+
+	if (irqs_disabled()) {
+		u8 *nm_events;
+
+		nm_events = (u8 *)&hvdb_data->hvdb_page.events.nm_events;
+		events.nm_events = xchg(nm_events, 0);
+
+		if (events.nmi)
+			exc_nmi(regs);
+
+		if (events.mce)
+			exc_machine_check(regs);
+
+		return true;
+	}
+
+	pending_events = (u16 *)&hvdb_data->hvdb_page.events.pending_events;
+	events.pending_events = xchg(pending_events, 0);
+
+	if (events.nmi)
+		exc_nmi(regs);
+
+	if (events.mce)
+		exc_machine_check(regs);
+
+	if (events.vector) {
+		gate_desc *gate;
+
+		gate = hv_get_gate_desc(events.vector);
+
+		/* Interrupt vector supplied, validate it */
+		if (hv_is_spurious_interrupt(gate)) {
+			exc_spurious_interrupt_bug(regs);
+			return true;
+		}
+
+		if (events.vector < FIRST_EXTERNAL_VECTOR) {
+			/* Exception vectors */
+			WARN(1, "exception shouldn't happen\n");
+		} else if (events.vector == FIRST_EXTERNAL_VECTOR) {
+			sysvec_irq_move_cleanup(regs);
+		} else if (events.vector == IA32_SYSCALL_VECTOR) {
+			WARN(1, "syscall shouldn't happen\n");
+		} else if (events.vector >= FIRST_SYSTEM_VECTOR) {
+			/* System vectors */
+			WARN(1, "need to implement\n");
+			switch (events.vector) {
+#ifdef CONFIG_X86_LOCAL_APIC
+			case LOCAL_TIMER_VECTOR:
+				sysvec_apic_timer_interrupt(regs);
+				break;
+			case X86_PLATFORM_IPI_VECTOR:
+				sysvec_x86_platform_ipi(regs);
+				break;
+			case ERROR_APIC_VECTOR:
+				sysvec_error_interrupt(regs);
+				break;
+			case SPURIOUS_APIC_VECTOR:
+				sysvec_spurious_apic_interrupt(regs);
+				break;
+# ifdef CONFIG_X86_MCE_AMD
+			case DEFERRED_ERROR_VECTOR:
+				sysvec_deferred_error(regs);
+				break;
+# endif
+# ifdef CONFIG_IRQ_WORK
+			case IRQ_WORK_VECTOR:
+				sysvec_irq_work(regs);
+				break;
+# endif
+# ifdef CONFIG_X86_MCE_THRESHOLD
+			case THRESHOLD_APIC_VECTOR:
+				sysvec_threshold(regs);
+				break;
+# endif
+# ifdef CONFIG_X86_THERMAL_VECTOR
+			case THERMAL_APIC_VECTOR:
+				sysvec_thermal(regs);
+				break;
+# endif
+#endif
+
+#if IS_ENABLED(CONFIG_HYPERV)
+			case HYPERV_STIMER0_VECTOR:
+				sysvec_hyperv_stimer0(regs);
+				break;
+			case HYPERV_REENLIGHTENMENT_VECTOR:
+				sysvec_hyperv_reenlightenment(regs);
+				break;
+#if 0
+			case HYPERVISOR_CALLBACK_VECTOR:
+				sysvec_hyperv_callback(regs);
+				break;
+#endif
+#endif
+
+#ifdef CONFIG_KVM_GUEST
+#if 0
+			case HYPERVISOR_CALLBACK_VECTOR:
+				sysvec_kvm_asyncpf_interrupt(regs);
+				break;
+#endif
+#endif
+
+#ifdef CONFIG_HAVE_KVM
+			case POSTED_INTR_NESTED_VECTOR:
+				sysvec_kvm_posted_intr_nested_ipi(regs);
+				break;
+			case POSTED_INTR_WAKEUP_VECTOR:
+				sysvec_kvm_posted_intr_wakeup_ipi(regs);
+				break;
+			case POSTED_INTR_VECTOR:
+				sysvec_kvm_posted_intr_ipi(regs);
+				break;
+#endif
+
+#ifdef CONFIG_SMP
+			case REBOOT_VECTOR:
+				sysvec_reboot(regs);
+				break;
+			case CALL_FUNCTION_SINGLE_VECTOR:
+				sysvec_call_function_single(regs);
+				break;
+			case CALL_FUNCTION_VECTOR:
+				sysvec_call_function(regs);
+				break;
+			case RESCHEDULE_VECTOR:
+				sysvec_reschedule_ipi(regs);
+				break;
+#endif
+			}
+		} else {
+			common_interrupt(regs, events.vector);
+		}
+	}
+
+	hvdb_data->hv_pending_event = false;
+
+	return true;
 }
 
 static __always_inline bool on_hv_fallback_stack(struct pt_regs *regs)
