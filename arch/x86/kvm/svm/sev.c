@@ -4367,11 +4367,17 @@ bool sev_snp_nmi_blocked(struct kvm_vcpu *vcpu)
 
 bool sev_snp_interrupt_blocked(struct kvm_vcpu *vcpu)
 {
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct vmcb *vmcb = svm->vmcb;
 	struct kvm_host_map hvdb_map;
 	struct hvdb *hvdb;
 	bool blocked;
 
 	WARN_ON_ONCE(!sev_snp_guest(vcpu->kvm));
+
+	/* Check the interrupt mask in the VMCB */
+	if (!(vmcb->control.int_state & SVM_GUEST_INTERRUPT_MASK))
+		return true;
 
 	/* Indicate interrupts are blocked if doorbell page can't be mapped */
 	hvdb = map_hvdb(vcpu, &hvdb_map);
