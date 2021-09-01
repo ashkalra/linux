@@ -17,6 +17,7 @@
 #include <linux/cpumask.h>
 #include <linux/static_call_types.h>
 #include <asm/frame.h>
+#include <asm/sev-hvdb.h>
 
 u64 dummy_steal_clock(int cpu);
 u64 dummy_sched_clock(void);
@@ -692,6 +693,7 @@ static inline notrace void arch_local_irq_disable(void)
 static inline notrace void arch_local_irq_enable(void)
 {
 	PVOP_ALT_VCALLEE0(irq.irq_enable, "sti;", ALT_NOT(X86_FEATURE_XENPV));
+	snp_handle_pending_hvdb(NULL);
 }
 
 static inline notrace unsigned long arch_local_irq_save(void)

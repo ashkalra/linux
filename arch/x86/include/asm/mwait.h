@@ -7,6 +7,7 @@
 
 #include <asm/cpufeature.h>
 #include <asm/nospec-branch.h>
+#include <asm/sev-hvdb.h>
 
 #define MWAIT_SUBSTATE_MASK		0xf
 #define MWAIT_CSTATE_MASK		0xf
@@ -89,8 +90,12 @@ static inline void __mwaitx(unsigned long eax, unsigned long ebx,
 static inline void __sti_mwait(unsigned long eax, unsigned long ecx)
 {
 	mds_idle_clear_cpu_buffers();
+
+	asm volatile("sti");
+	snp_handle_pending_hvdb(NULL);
+
 	/* "mwait %eax, %ecx;" */
-	asm volatile("sti; .byte 0x0f, 0x01, 0xc9;"
+	asm volatile(".byte 0x0f, 0x01, 0xc9;"
 		     :: "a" (eax), "c" (ecx));
 }
 

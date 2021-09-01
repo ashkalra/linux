@@ -1013,6 +1013,16 @@ SYM_CODE_END(paranoid_entry)
  *     Y        User space GSBASE, must be restored unconditionally
  */
 SYM_CODE_START_LOCAL(paranoid_exit)
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	/*
+	 * If a #HV was delivered during execution and interrupts were
+	 * disabled, then check if it can be handled before the iret
+	 * (which may re-enable interrupts).
+	 */
+	mov	%rsp, %rdi
+	call	snp_handle_pending_hvdb
+#endif
+
 	UNWIND_HINT_REGS
 	/*
 	 * The order of operations is important. RESTORE_CR3 requires
@@ -1126,6 +1136,16 @@ SYM_CODE_START_LOCAL(error_entry)
 SYM_CODE_END(error_entry)
 
 SYM_CODE_START_LOCAL(error_return)
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	/*
+	 * If a #HV was delivered during execution and interrupts were
+	 * disabled, then check if it can be handled before the iret
+	 * (which may re-enable interrupts).
+	 */
+	mov	%rsp, %rdi
+	call	snp_handle_pending_hvdb
+#endif
+
 	UNWIND_HINT_REGS
 	DEBUG_ENTRY_ASSERT_IRQS_OFF
 	testb	$3, CS(%rsp)
@@ -1227,6 +1247,16 @@ SYM_CODE_START(asm_exc_nmi)
 	movq	%rsp, %rdi
 	movq	$-1, %rsi
 	call	exc_nmi
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	/*
+	 * If a #HV was delivered during execution and interrupts were
+	 * disabled, then check if it can be handled before the iret
+	 * (which may re-enable interrupts).
+	 */
+	mov	%rsp, %rdi
+	call	snp_handle_pending_hvdb
+#endif
 
 	/*
 	 * Return back to user mode.  We must *not* do the normal exit
@@ -1439,6 +1469,16 @@ end_repeat_nmi:
 	movq	%rsp, %rdi
 	movq	$-1, %rsi
 	call	exc_nmi
+
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+	/*
+	 * If a #HV was delivered during execution and interrupts were
+	 * disabled, then check if it can be handled before the iret
+	 * (which may re-enable interrupts).
+	 */
+	mov	%rsp, %rdi
+	call	snp_handle_pending_hvdb
+#endif
 
 	/* Always restore stashed CR3 value (see paranoid_entry) */
 	RESTORE_CR3 scratch_reg=%r15 save_reg=%r14

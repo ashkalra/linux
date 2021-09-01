@@ -12,6 +12,7 @@
 #include <asm/nops.h>
 #include <asm/cpufeatures.h>
 #include <asm/alternative.h>
+#include <asm/sev-hvdb.h>
 
 /* "Raw" instruction opcodes */
 #define __ASM_CLAC	".byte 0x0f,0x01,0xca"
@@ -68,6 +69,8 @@ static __always_inline void smap_restore(unsigned long flags)
 		      ALTERNATIVE("", "push %0; popf\n\t",
 				  X86_FEATURE_SMAP)
 		      : : "g" (flags) : "memory", "cc");
+	if (flags & X86_EFLAGS_IF)
+		snp_handle_pending_hvdb(NULL);
 }
 
 /* These macros can be used in asm() statements */

@@ -2759,11 +2759,11 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 
 	hvdb_data->hv_pending_event = true;
 
-	if (irqs_disabled()) {
+	if (!(regs->flags & X86_EFLAGS_IF)) {
 		u8 *nm_events;
 
 		nm_events = (u8 *)&hvdb_data->hvdb_page.events.nm_events;
-		events.nm_events = xchg(nm_events, 0);
+		events.nm_events = xchg(nm_events, 0x80);
 
 		if (events.nmi)
 			exc_nmi(regs);
@@ -2774,127 +2774,131 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 		return true;
 	}
 
-	pending_events = (u16 *)&hvdb_data->hvdb_page.events.pending_events;
-	events.pending_events = xchg(pending_events, 0);
+	while (true) {
+		hvdb_data->hv_pending_event = false;
 
-	if (events.nmi)
-		exc_nmi(regs);
+		pending_events = (u16 *)&hvdb_data->hvdb_page.events.pending_events;
+		events.pending_events = xchg(pending_events, 0);
 
-	if (events.mce)
-		exc_machine_check(regs);
+		if (!events.pending_events)
+			break;
 
-	if (events.vector) {
-		gate_desc *gate;
+		if (events.nmi)
+			exc_nmi(regs);
 
-		gate = hv_get_gate_desc(events.vector);
+		if (events.mce)
+			exc_machine_check(regs);
 
-		/* Interrupt vector supplied, validate it */
-		if (hv_is_spurious_interrupt(gate)) {
-			exc_spurious_interrupt_bug(regs);
-			return true;
-		}
+		if (events.vector) {
+			gate_desc *gate;
 
-		if (events.vector < FIRST_EXTERNAL_VECTOR) {
-			/* Exception vectors */
-			WARN(1, "exception shouldn't happen\n");
-		} else if (events.vector == FIRST_EXTERNAL_VECTOR) {
-			sysvec_irq_move_cleanup(regs);
-		} else if (events.vector == IA32_SYSCALL_VECTOR) {
-			WARN(1, "syscall shouldn't happen\n");
-		} else if (events.vector >= FIRST_SYSTEM_VECTOR) {
-			/* System vectors */
-			WARN(1, "need to implement\n");
-			switch (events.vector) {
-#ifdef CONFIG_X86_LOCAL_APIC
-			case LOCAL_TIMER_VECTOR:
-				sysvec_apic_timer_interrupt(regs);
-				break;
-			case X86_PLATFORM_IPI_VECTOR:
-				sysvec_x86_platform_ipi(regs);
-				break;
-			case ERROR_APIC_VECTOR:
-				sysvec_error_interrupt(regs);
-				break;
-			case SPURIOUS_APIC_VECTOR:
-				sysvec_spurious_apic_interrupt(regs);
-				break;
-# ifdef CONFIG_X86_MCE_AMD
-			case DEFERRED_ERROR_VECTOR:
-				sysvec_deferred_error(regs);
-				break;
-# endif
-# ifdef CONFIG_IRQ_WORK
-			case IRQ_WORK_VECTOR:
-				sysvec_irq_work(regs);
-				break;
-# endif
-# ifdef CONFIG_X86_MCE_THRESHOLD
-			case THRESHOLD_APIC_VECTOR:
-				sysvec_threshold(regs);
-				break;
-# endif
-# ifdef CONFIG_X86_THERMAL_VECTOR
-			case THERMAL_APIC_VECTOR:
-				sysvec_thermal(regs);
-				break;
-# endif
-#endif
+			gate = hv_get_gate_desc(events.vector);
 
-#if IS_ENABLED(CONFIG_HYPERV)
-			case HYPERV_STIMER0_VECTOR:
-				sysvec_hyperv_stimer0(regs);
-				break;
-			case HYPERV_REENLIGHTENMENT_VECTOR:
-				sysvec_hyperv_reenlightenment(regs);
-				break;
-#if 0
-			case HYPERVISOR_CALLBACK_VECTOR:
-				sysvec_hyperv_callback(regs);
-				break;
-#endif
-#endif
-
-#ifdef CONFIG_KVM_GUEST
-#if 0
-			case HYPERVISOR_CALLBACK_VECTOR:
-				sysvec_kvm_asyncpf_interrupt(regs);
-				break;
-#endif
-#endif
-
-#ifdef CONFIG_HAVE_KVM
-			case POSTED_INTR_NESTED_VECTOR:
-				sysvec_kvm_posted_intr_nested_ipi(regs);
-				break;
-			case POSTED_INTR_WAKEUP_VECTOR:
-				sysvec_kvm_posted_intr_wakeup_ipi(regs);
-				break;
-			case POSTED_INTR_VECTOR:
-				sysvec_kvm_posted_intr_ipi(regs);
-				break;
-#endif
-
-#ifdef CONFIG_SMP
-			case REBOOT_VECTOR:
-				sysvec_reboot(regs);
-				break;
-			case CALL_FUNCTION_SINGLE_VECTOR:
-				sysvec_call_function_single(regs);
-				break;
-			case CALL_FUNCTION_VECTOR:
-				sysvec_call_function(regs);
-				break;
-			case RESCHEDULE_VECTOR:
-				sysvec_reschedule_ipi(regs);
-				break;
-#endif
+			/* Interrupt vector supplied, validate it */
+			if (hv_is_spurious_interrupt(gate)) {
+				exc_spurious_interrupt_bug(regs);
+				return true;
 			}
-		} else {
-			common_interrupt(regs, events.vector);
+
+			if (events.vector < FIRST_EXTERNAL_VECTOR) {
+				/* Exception vectors */
+				WARN(1, "exception shouldn't happen\n");
+			} else if (events.vector == FIRST_EXTERNAL_VECTOR) {
+				sysvec_irq_move_cleanup(regs);
+			} else if (events.vector == IA32_SYSCALL_VECTOR) {
+				WARN(1, "syscall shouldn't happen\n");
+			} else if (events.vector >= FIRST_SYSTEM_VECTOR) {
+				/* System vectors */
+				switch (events.vector) {
+	#ifdef CONFIG_X86_LOCAL_APIC
+				case LOCAL_TIMER_VECTOR:
+					sysvec_apic_timer_interrupt(regs);
+					break;
+				case X86_PLATFORM_IPI_VECTOR:
+					sysvec_x86_platform_ipi(regs);
+					break;
+				case ERROR_APIC_VECTOR:
+					sysvec_error_interrupt(regs);
+					break;
+				case SPURIOUS_APIC_VECTOR:
+					sysvec_spurious_apic_interrupt(regs);
+					break;
+	# ifdef CONFIG_X86_MCE_AMD
+				case DEFERRED_ERROR_VECTOR:
+					sysvec_deferred_error(regs);
+					break;
+	# endif
+	# ifdef CONFIG_IRQ_WORK
+				case IRQ_WORK_VECTOR:
+					sysvec_irq_work(regs);
+					break;
+	# endif
+	# ifdef CONFIG_X86_MCE_THRESHOLD
+				case THRESHOLD_APIC_VECTOR:
+					sysvec_threshold(regs);
+					break;
+	# endif
+	# ifdef CONFIG_X86_THERMAL_VECTOR
+				case THERMAL_APIC_VECTOR:
+					sysvec_thermal(regs);
+					break;
+	# endif
+	#endif
+
+	#if IS_ENABLED(CONFIG_HYPERV)
+				case HYPERV_STIMER0_VECTOR:
+					sysvec_hyperv_stimer0(regs);
+					break;
+				case HYPERV_REENLIGHTENMENT_VECTOR:
+					sysvec_hyperv_reenlightenment(regs);
+					break;
+	#if 0
+				case HYPERVISOR_CALLBACK_VECTOR:
+					sysvec_hyperv_callback(regs);
+					break;
+	#endif
+	#endif
+
+	#ifdef CONFIG_KVM_GUEST
+	#if 0
+				case HYPERVISOR_CALLBACK_VECTOR:
+					sysvec_kvm_asyncpf_interrupt(regs);
+					break;
+	#endif
+	#endif
+
+	#ifdef CONFIG_HAVE_KVM
+				case POSTED_INTR_NESTED_VECTOR:
+					sysvec_kvm_posted_intr_nested_ipi(regs);
+					break;
+				case POSTED_INTR_WAKEUP_VECTOR:
+					sysvec_kvm_posted_intr_wakeup_ipi(regs);
+					break;
+				case POSTED_INTR_VECTOR:
+					sysvec_kvm_posted_intr_ipi(regs);
+					break;
+	#endif
+
+	#ifdef CONFIG_SMP
+				case REBOOT_VECTOR:
+					sysvec_reboot(regs);
+					break;
+				case CALL_FUNCTION_SINGLE_VECTOR:
+					sysvec_call_function_single(regs);
+					break;
+				case CALL_FUNCTION_VECTOR:
+					sysvec_call_function(regs);
+					break;
+				case RESCHEDULE_VECTOR:
+					sysvec_reschedule_ipi(regs);
+					break;
+	#endif
+				}
+			} else {
+				common_interrupt(regs, events.vector);
+			}
 		}
 	}
-
-	hvdb_data->hv_pending_event = false;
 
 	return true;
 }
@@ -2960,3 +2964,32 @@ DEFINE_IDTENTRY_HV_USER(exc_hv_injection)
 	instrumentation_end();
 	irqentry_exit_to_user_mode(regs);
 }
+
+void snp_handle_pending_hvdb(struct pt_regs *regs)
+{
+	struct sev_hvdb_runtime_data *hvdb_data;
+	struct sev_es_runtime_data *data;
+
+	if (!sev_feature_enabled(SEV_SNP_RINJ))
+		return;
+
+	if (regs && !(regs->flags & X86_EFLAGS_IF))
+		return;
+
+	data = this_cpu_read(runtime_data);
+	if (WARN_ON(!data))
+		return;
+
+	hvdb_data = data->hvdb_data;
+	if (WARN_ON(!hvdb_data))
+		return;
+
+	if (!hvdb_data->hv_pending_event)
+		return;
+
+	if (regs)
+		hv_raw_handle_exception(regs);
+	else
+		asm volatile("int %0" : : "i" (X86_TRAP_HV));
+}
+EXPORT_SYMBOL(snp_handle_pending_hvdb);

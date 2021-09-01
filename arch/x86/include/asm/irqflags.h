@@ -6,6 +6,7 @@
 
 #ifndef __ASSEMBLY__
 
+#include <asm/sev-hvdb.h>
 #include <asm/nospec-branch.h>
 
 /* Provide __cpuidle; we can't safely include <linux/cpu.h> */
@@ -43,12 +44,15 @@ static __always_inline void native_irq_disable(void)
 static __always_inline void native_irq_enable(void)
 {
 	asm volatile("sti": : :"memory");
+	snp_handle_pending_hvdb(NULL);
 }
 
 static inline __cpuidle void native_safe_halt(void)
 {
 	mds_idle_clear_cpu_buffers();
-	asm volatile("sti; hlt": : :"memory");
+	asm volatile("sti": : :"memory");
+	snp_handle_pending_hvdb(NULL);
+	asm volatile("hlt": : :"memory");
 }
 
 static inline __cpuidle void native_halt(void)

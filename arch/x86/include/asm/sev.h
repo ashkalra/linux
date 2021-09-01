@@ -179,6 +179,7 @@ void sev_snp_cpuid_init_remap_early(void);
 #endif /* __BOOT_COMPRESSED */
 void sev_snp_cpuid_init(struct boot_params *bp);
 void snp_set_hvdb(void);
+void snp_handle_pending_hvdb(struct pt_regs *regs);
 #else
 static inline void sev_es_ist_enter(struct pt_regs *regs) { }
 static inline void sev_es_ist_exit(void) { }
@@ -203,6 +204,7 @@ static inline void sev_snp_cpuid_init_virtual(void) { }
 static inline void sev_snp_cpuid_init_remap_early(void) { }
 #endif /*__BOOT_COMPRESSED */
 static inline void snp_set_hvdb(void) { }
+static inline void snp_handle_pending_hvdb(struct pt_regs *regs) { }
 #endif
 
 #endif
