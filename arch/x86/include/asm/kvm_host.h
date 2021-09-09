@@ -912,6 +912,8 @@ struct kvm_vcpu_arch {
 #if IS_ENABLED(CONFIG_HYPERV)
 	hpa_t hv_root_tdp;
 #endif
+
+	unsigned long run_id;
 };
 
 struct kvm_lpage_info {

@@ -1934,8 +1934,22 @@ EXPORT_SYMBOL_GPL(kvm_emulate_monitor);
 static inline bool kvm_vcpu_exit_request(struct kvm_vcpu *vcpu)
 {
 	xfer_to_guest_mode_prepare();
+#if 0
 	return vcpu->mode == EXITING_GUEST_MODE || kvm_request_pending(vcpu) ||
 		xfer_to_guest_mode_work_pending();
+#else
+	do {
+		bool ret;
+
+		ret = vcpu->mode == EXITING_GUEST_MODE || kvm_request_pending(vcpu) ||
+			xfer_to_guest_mode_work_pending();
+
+		if (ret)
+			trace_kvm_inj_request_pending(vcpu, READ_ONCE(vcpu->requests));
+
+		return ret;
+	} while (0);
+#endif
 }
 
 /*
@@ -4435,6 +4449,8 @@ static int kvm_vcpu_ready_for_interrupt_injection(struct kvm_vcpu *vcpu)
 static int kvm_vcpu_ioctl_interrupt(struct kvm_vcpu *vcpu,
 				    struct kvm_interrupt *irq)
 {
+	trace_kvm_inj_ioctl_irq(vcpu, irq->irq);
+
 	if (irq->irq >= KVM_NR_INTERRUPTS)
 		return -EINVAL;
 
@@ -8888,6 +8904,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 	if (vcpu->arch.exception.injected) {
 		kvm_inject_exception(vcpu);
 		can_inject = false;
+		trace_kvm_inj_can_inject(vcpu, false, 0);
 	}
 	/*
 	 * Do not inject an NMI or interrupt if there is a pending
@@ -8907,9 +8924,11 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 		if (vcpu->arch.nmi_injected) {
 			static_call(kvm_x86_set_nmi)(vcpu);
 			can_inject = false;
+			trace_kvm_inj_can_inject(vcpu, false, 1);
 		} else if (vcpu->arch.interrupt.injected) {
 			static_call(kvm_x86_set_irq)(vcpu);
 			can_inject = false;
+			trace_kvm_inj_can_inject(vcpu, false, 2);
 		}
 	}
 
@@ -8930,7 +8949,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 
 	/* try to inject new event if pending */
 	if (vcpu->arch.exception.pending) {
-		trace_kvm_inj_exception(vcpu->arch.exception.nr,
+		trace_kvm_inj_exception(vcpu, vcpu->arch.exception.nr,
 					vcpu->arch.exception.has_error_code,
 					vcpu->arch.exception.error_code);
 
@@ -8951,6 +8970,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 
 		kvm_inject_exception(vcpu);
 		can_inject = false;
+		trace_kvm_inj_can_inject(vcpu, false, 3);
 	}
 
 	/*
@@ -8973,6 +8993,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 			++vcpu->arch.smi_count;
 			enter_smm(vcpu);
 			can_inject = false;
+			trace_kvm_inj_can_inject(vcpu, false, 4);
 		} else
 			static_call(kvm_x86_enable_smi_window)(vcpu);
 	}
@@ -8986,6 +9007,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 			vcpu->arch.nmi_injected = true;
 			static_call(kvm_x86_set_nmi)(vcpu);
 			can_inject = false;
+			trace_kvm_inj_can_inject(vcpu, false, 5);
 			WARN_ON(static_call(kvm_x86_nmi_allowed)(vcpu, true) < 0);
 		}
 		if (vcpu->arch.nmi_pending)
@@ -9015,6 +9037,7 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool *req_immediate_exit)
 
 out:
 	if (r == -EBUSY) {
+		trace_kvm_inj_not_allowed(vcpu, vcpu->arch.smi_pending, vcpu->arch.nmi_pending, kvm_cpu_has_injectable_intr(vcpu));
 		*req_immediate_exit = true;
 		r = 0;
 	}
@@ -9617,6 +9640,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	r = kvm_mmu_reload(vcpu);
 	if (unlikely(r)) {
+		trace_kvm_inj_prepare_cancel(vcpu, 0);
 		goto cancel_injection;
 	}
 
@@ -9662,6 +9686,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		preempt_enable();
 		vcpu->srcu_idx = srcu_read_lock(&vcpu->kvm->srcu);
 		r = 1;
+		trace_kvm_inj_prepare_cancel(vcpu, 1);
 		goto cancel_injection;
 	}
 
@@ -9852,6 +9877,7 @@ static int vcpu_run(struct kvm_vcpu *vcpu)
 		} else {
 			r = vcpu_block(kvm, vcpu);
 		}
+		vcpu->arch.run_id++;
 
 		if (r <= 0)
 			break;
@@ -12421,6 +12447,7 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_entry);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_exit);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_fast_mmio);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_virq);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_cancel);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_page_fault);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_msr);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_cr);
@@ -12445,3 +12472,14 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_vmgexit_exit);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_vmgexit_msr_protocol_enter);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_vmgexit_msr_protocol_exit);
 EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_snp_psc);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_int_allowed);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_snp_int_blocked);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_snp_queue_excp);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_snp_inject_hv_pre);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_snp_inject_hv_post);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_event_inj_vcpu_run);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_event_inj_vcpu_exit);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_vintr_inj_vcpu_run);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_vintr_inj_vcpu_exit);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_vintr_set);
+EXPORT_TRACEPOINT_SYMBOL_GPL(kvm_inj_vintr_clear);

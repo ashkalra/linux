@@ -316,18 +316,20 @@ TRACE_EVENT_KVM_EXIT(kvm_exit);
  * Tracepoint for kvm interrupt injection:
  */
 TRACE_EVENT(kvm_inj_virq,
-	TP_PROTO(unsigned int irq),
-	TP_ARGS(irq),
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int irq),
+	TP_ARGS(vcpu, irq),
 
 	TP_STRUCT__entry(
-		__field(	unsigned int,	irq		)
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	irq	)
 	),
 
 	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
 		__entry->irq		= irq;
 	),
 
-	TP_printk("irq %u", __entry->irq)
+	TP_printk("id %lu, irq %u", __entry->run_id, __entry->irq)
 );
 
 #define EXS(x) { x##_VECTOR, "#" #x }
@@ -341,25 +343,451 @@ TRACE_EVENT(kvm_inj_virq,
  * Tracepoint for kvm interrupt injection:
  */
 TRACE_EVENT(kvm_inj_exception,
-	TP_PROTO(unsigned exception, bool has_error, unsigned error_code),
-	TP_ARGS(exception, has_error, error_code),
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned exception, bool has_error, unsigned error_code),
+	TP_ARGS(vcpu, exception, has_error, error_code),
 
 	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
 		__field(	u8,	exception	)
 		__field(	u8,	has_error	)
 		__field(	u32,	error_code	)
 	),
 
 	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
 		__entry->exception	= exception;
 		__entry->has_error	= has_error;
 		__entry->error_code	= error_code;
 	),
 
-	TP_printk("%s (0x%x)",
-		  __print_symbolic(__entry->exception, kvm_trace_sym_exc),
+	TP_printk("id %lu, %s (0x%x)",
+		  __entry->run_id, __print_symbolic(__entry->exception, kvm_trace_sym_exc),
 		  /* FIXME: don't print error_code if not present */
 		  __entry->has_error ? __entry->error_code : 0)
+);
+
+TRACE_EVENT(kvm_inj_ioctl_irq,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int irq),
+	TP_ARGS(vcpu, irq),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	irq		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->irq		= irq;
+	),
+
+	TP_printk("id %lu, irq %u", __entry->run_id, __entry->irq)
+);
+
+TRACE_EVENT(kvm_inj_request_pending,
+	TP_PROTO(struct kvm_vcpu *vcpu, u64 requests),
+	TP_ARGS(vcpu, requests),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	u64,	requests	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->requests	= requests;
+	),
+
+	TP_printk("id %lu, requests %#llx", __entry->run_id, __entry->requests)
+);
+
+
+TRACE_EVENT(kvm_inj_prepare_cancel,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int reason),
+	TP_ARGS(vcpu, reason),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	reason	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->reason		= reason;
+	),
+
+	TP_printk("id %lu, reason %u", __entry->run_id, __entry->reason)
+);
+
+TRACE_EVENT(kvm_inj_cancel,
+	TP_PROTO(struct kvm_vcpu *vcpu, u32 event_inj, u32 event_inj_err),
+	TP_ARGS(vcpu, event_inj, event_inj_err),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	u32,	event_inj	)
+		__field(	u32,	event_inj_err	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->event_inj	= event_inj;
+		__entry->event_inj_err	= event_inj_err;
+	),
+
+	TP_printk("id %lu, event_inj 0x%x, event_inj_err 0x%x", __entry->run_id, __entry->event_inj, __entry->event_inj_err)
+);
+
+TRACE_EVENT(kvm_inj_not_allowed,
+	TP_PROTO(struct kvm_vcpu *vcpu, bool smi, bool nmi, bool irq),
+	TP_ARGS(vcpu, smi, nmi, irq),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	bool,	smi		)
+		__field(	bool,	nmi		)
+		__field(	bool,	irq		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->smi		= smi;
+		__entry->nmi		= nmi;
+		__entry->irq		= irq;
+	),
+
+	TP_printk("id %lu, smi %d, nmi %d, irq %d", __entry->run_id, __entry->smi, __entry->nmi, __entry->irq)
+);
+
+TRACE_EVENT(kvm_inj_can_inject,
+	TP_PROTO(struct kvm_vcpu *vcpu, bool can, unsigned int r),
+	TP_ARGS(vcpu, can, r),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	bool,	can	)
+		__field(	unsigned int,	r	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->can		= can;
+		__entry->r		= r;
+	),
+
+	TP_printk("id %lu, can_inj %u, reason %u", __entry->run_id, __entry->can, __entry->r)
+);
+
+TRACE_EVENT(kvm_inj_int_allowed,
+	TP_PROTO(struct kvm_vcpu *vcpu, bool for_inj, int r),
+	TP_ARGS(vcpu, for_inj, r),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	bool,	for_inj	)
+		__field(	int,	r	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->for_inj	= for_inj;
+		__entry->r		= r;
+	),
+
+	TP_printk("id %lu, for_inj %u, r %d", __entry->run_id, __entry->for_inj, __entry->r)
+);
+
+TRACE_EVENT(kvm_inj_has_extint,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int reason),
+	TP_ARGS(vcpu, reason),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	reason		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->reason		= reason;
+	),
+
+	TP_printk("id %lu, reason %u", __entry->run_id, __entry->reason)
+);
+
+TRACE_EVENT(kvm_inj_set_isr,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int vec),
+	TP_ARGS(vcpu, vec),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	vec		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->vec		= vec;
+	),
+
+	TP_printk("id %lu, vec %u", __entry->run_id, __entry->vec)
+);
+
+TRACE_EVENT(kvm_inj_timer_start,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int spiv),
+	TP_ARGS(vcpu, spiv),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	spiv	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->spiv		= spiv;
+	),
+
+	TP_printk("id %lu, spiv %u", __entry->run_id, __entry->spiv)
+);
+
+TRACE_EVENT(kvm_inj_timer_expired,
+	TP_PROTO(struct kvm_vcpu *vcpu, bool from_timer_fn),
+	TP_ARGS(vcpu, from_timer_fn),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	bool,	from_timer_fn	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->from_timer_fn		= from_timer_fn;
+	),
+
+	TP_printk("id %lu, from_timer_fn %u", __entry->run_id, __entry->from_timer_fn)
+);
+
+TRACE_EVENT(kvm_inj_timer_expired_posting,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int posted_int),
+	TP_ARGS(vcpu, posted_int),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	posted_int	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->posted_int		= posted_int;
+	),
+
+	TP_printk("id %lu, posted_int %u", __entry->run_id, __entry->posted_int)
+);
+
+TRACE_EVENT(kvm_inj_timer,
+	TP_PROTO(struct kvm_vcpu *vcpu, int pending),
+	TP_ARGS(vcpu, pending),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	int,	pending	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->pending		= pending;
+	),
+
+	TP_printk("id %lu, pending %u", __entry->run_id, __entry->pending)
+);
+
+TRACE_EVENT(kvm_inj_snp_int_blocked,
+	TP_PROTO(struct kvm_vcpu *vcpu, bool blocked, unsigned int reason),
+	TP_ARGS(vcpu, blocked, reason),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	bool,		blocked	)
+		__field(	unsigned int,	reason		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->blocked	= blocked;
+		__entry->reason		= reason;
+	),
+
+	TP_printk("id %lu, blocked %u, pending_event 0x%x", __entry->run_id, __entry->blocked, __entry->reason)
+);
+
+TRACE_EVENT(kvm_inj_snp_queue_excp,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int excp),
+	TP_ARGS(vcpu, excp),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	excp		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->excp		= excp;
+	),
+
+	TP_printk("id %lu, excp %u", __entry->run_id, __entry->excp)
+);
+
+TRACE_EVENT(kvm_inj_snp_inject_hv_pre,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int event_inj, u16 events, u8 no_eoi),
+	TP_ARGS(vcpu, event_inj, events, no_eoi),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	event_inj	)
+		__field(	u16,	events		)
+		__field(	u8,	no_eoi		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->event_inj	= event_inj;
+		__entry->events		= events;
+		__entry->no_eoi		= no_eoi;
+	),
+
+	TP_printk("id %lu, event_inj 0x%x, events 0x%x, no_eoi 0x%x", __entry->run_id, __entry->event_inj, __entry->events, __entry->no_eoi)
+);
+
+TRACE_EVENT(kvm_inj_snp_inject_hv_post,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int event_inj, u16 events, u8 no_eoi),
+	TP_ARGS(vcpu, event_inj, events, no_eoi),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	event_inj	)
+		__field(	u16,	events		)
+		__field(	u8,	no_eoi		)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->event_inj	= event_inj;
+		__entry->events		= events;
+		__entry->no_eoi		= no_eoi;
+	),
+
+	TP_printk("id %lu, event_inj 0x%x, events 0x%x, no_eoi 0x%x", __entry->run_id, __entry->event_inj, __entry->events, __entry->no_eoi)
+);
+
+TRACE_EVENT(kvm_inj_event_inj_vcpu_run,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int event_inj),
+	TP_ARGS(vcpu, event_inj),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	event_inj	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->event_inj	= event_inj;
+	),
+
+	TP_printk("id %lu, event_inj 0x%x", __entry->run_id, __entry->event_inj)
+);
+
+TRACE_EVENT(kvm_inj_event_inj_vcpu_exit,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int exit_code, unsigned int event_inj, unsigned int exit_int_info),
+	TP_ARGS(vcpu, exit_code, event_inj, exit_int_info),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	exit_code	)
+		__field(	unsigned int,	event_inj	)
+		__field(	unsigned int,	exit_int_info	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->exit_code	= exit_code;
+		__entry->event_inj	= event_inj;
+		__entry->exit_int_info	= exit_int_info;
+	),
+
+	TP_printk("id %lu, exit_code 0x%x, event_inj 0x%x, exit_int_info 0x%x", __entry->run_id, __entry->exit_code, __entry->event_inj, __entry->exit_int_info)
+);
+
+TRACE_EVENT(kvm_inj_vintr_set,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int vintr_inj),
+	TP_ARGS(vcpu, vintr_inj),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	vintr_inj	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->vintr_inj	= vintr_inj;
+	),
+
+	TP_printk("id %lu, vintr_inj 0x%x", __entry->run_id, __entry->vintr_inj)
+);
+
+TRACE_EVENT(kvm_inj_vintr_clear,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int vintr_inj),
+	TP_ARGS(vcpu, vintr_inj),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	vintr_inj	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->vintr_inj	= vintr_inj;
+	),
+
+	TP_printk("id %lu, vintr_inj 0x%x", __entry->run_id, __entry->vintr_inj)
+);
+
+TRACE_EVENT(kvm_inj_vintr_inj_vcpu_run,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int vintr_inj),
+	TP_ARGS(vcpu, vintr_inj),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	vintr_inj	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->vintr_inj	= vintr_inj;
+	),
+
+	TP_printk("id %lu, vintr_inj 0x%x", __entry->run_id, __entry->vintr_inj)
+);
+
+TRACE_EVENT(kvm_inj_vintr_inj_vcpu_exit,
+	TP_PROTO(struct kvm_vcpu *vcpu, unsigned int exit_code, unsigned int vintr_inj, unsigned int exit_int_info, unsigned long rip, unsigned int int_state),
+	TP_ARGS(vcpu, exit_code, vintr_inj, exit_int_info, rip, int_state),
+
+	TP_STRUCT__entry(
+		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	exit_code	)
+		__field(	unsigned int,	vintr_inj	)
+		__field(	unsigned int,	exit_int_info	)
+		__field(	unsigned long,	rip	)
+		__field(	unsigned int,	int_state	)
+	),
+
+	TP_fast_assign(
+		__entry->run_id		= vcpu->arch.run_id;
+		__entry->exit_code	= exit_code;
+		__entry->vintr_inj	= vintr_inj;
+		__entry->exit_int_info	= exit_int_info;
+		__entry->rip		= rip;
+		__entry->int_state	= int_state;
+	),
+
+	TP_printk("id %lu, exit_code 0x%x, vintr_inj 0x%x, exit_int_info 0x%x, int_state 0x%x, rip 0x%lx", __entry->run_id, __entry->exit_code, __entry->vintr_inj, __entry->exit_int_info, __entry->int_state, __entry->rip)
 );
 
 /*

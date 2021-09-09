@@ -15,6 +15,7 @@
 #include "i8254.h"
 #include "x86.h"
 #include "xen.h"
+#include "trace.h"
 
 /*
  * check if there are pending timer events
@@ -54,19 +55,29 @@ int kvm_cpu_has_extint(struct kvm_vcpu *v)
 	 * pending interrupt or should re-inject an injected
 	 * interrupt.
 	 */
-	if (!lapic_in_kernel(v))
+	if (!lapic_in_kernel(v)) {
+		if (v->arch.interrupt.injected)
+			trace_kvm_inj_has_extint(v, 0);
 		return v->arch.interrupt.injected;
+	}
 
-	if (kvm_xen_has_interrupt(v))
+	if (kvm_xen_has_interrupt(v)) {
+		trace_kvm_inj_has_extint(v, 1);
 		return 1;
+	}
 
 	if (!kvm_apic_accept_pic_intr(v))
 		return 0;
 
-	if (irqchip_split(v->kvm))
+	if (irqchip_split(v->kvm)) {
+		if (pending_userspace_extint(v))
+			trace_kvm_inj_has_extint(v, 2);
 		return pending_userspace_extint(v);
-	else
+	} else {
+		if (v->kvm->arch.vpic->output)
+			trace_kvm_inj_has_extint(v, 3);
 		return v->kvm->arch.vpic->output;
+	}
 }
 
 /*

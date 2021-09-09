@@ -504,10 +504,17 @@ void kvm_apic_clear_irr(struct kvm_vcpu *vcpu, int vec)
 }
 EXPORT_SYMBOL_GPL(kvm_apic_clear_irr);
 
+static bool dump_once;
 static inline void apic_set_isr(int vec, struct kvm_lapic *apic)
 {
 	struct kvm_vcpu *vcpu;
 
+	if (!dump_once) {
+		dump_stack();
+		dump_once = true;
+	}
+
+	trace_kvm_inj_set_isr(apic->vcpu, vec);
 	if (__apic_test_and_set_vector(vec, apic->regs + APIC_ISR))
 		return;
 
@@ -1649,6 +1656,7 @@ static void apic_timer_expired(struct kvm_lapic *apic, bool from_timer_fn)
 	struct kvm_vcpu *vcpu = apic->vcpu;
 	struct kvm_timer *ktimer = &apic->lapic_timer;
 
+	trace_kvm_inj_timer_expired(vcpu, from_timer_fn);
 	if (atomic_read(&apic->lapic_timer.pending))
 		return;
 
@@ -1662,6 +1670,7 @@ static void apic_timer_expired(struct kvm_lapic *apic, bool from_timer_fn)
 	}
 
 	if (kvm_use_posted_timer_interrupt(apic->vcpu)) {
+		trace_kvm_inj_timer_expired_posting(vcpu, 1);
 		/*
 		 * Ensure the guest's timer has truly expired before posting an
 		 * interrupt.  Open code the relevant checks to avoid querying
@@ -1676,6 +1685,7 @@ static void apic_timer_expired(struct kvm_lapic *apic, bool from_timer_fn)
 		return;
 	}
 
+	trace_kvm_inj_timer_expired_posting(vcpu, 0);
 	atomic_inc(&apic->lapic_timer.pending);
 	kvm_make_request(KVM_REQ_UNBLOCK, vcpu);
 	if (from_timer_fn)
@@ -1969,6 +1979,7 @@ void kvm_lapic_restart_hv_timer(struct kvm_vcpu *vcpu)
 
 static void __start_apic_timer(struct kvm_lapic *apic, u32 count_reg)
 {
+	trace_kvm_inj_timer_start(apic->vcpu, 0);
 	atomic_set(&apic->lapic_timer.pending, 0);
 
 	if ((apic_lvtt_period(apic) || apic_lvtt_oneshot(apic))
@@ -2042,6 +2053,7 @@ int kvm_lapic_reg_write(struct kvm_lapic *apic, u32 reg, u32 val)
 			int i;
 			u32 lvt_val;
 
+			trace_kvm_inj_timer_start(apic->vcpu, 1);
 			for (i = 0; i < KVM_APIC_LVT_NUM; i++) {
 				lvt_val = kvm_lapic_get_reg(apic,
 						       APIC_LVTT + 0x10 * i);
@@ -2525,6 +2537,7 @@ void kvm_inject_apic_timer_irqs(struct kvm_vcpu *vcpu)
 	struct kvm_lapic *apic = vcpu->arch.apic;
 
 	if (atomic_read(&apic->lapic_timer.pending) > 0) {
+		trace_kvm_inj_timer(vcpu, atomic_read(&apic->lapic_timer.pending));
 		kvm_apic_inject_pending_timer_irqs(apic);
 		atomic_set(&apic->lapic_timer.pending, 0);
 	}
