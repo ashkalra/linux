@@ -679,7 +679,7 @@ inline void raise_softirq_irqoff(unsigned int nr)
 	 * Otherwise we wake up ksoftirqd to make sure we
 	 * schedule the softirq soon.
 	 */
-	if (!in_interrupt() && should_wake_ksoftirqd())
+	if ((!in_interrupt() || (in_nmi() && !in_serving_softirq())) && should_wake_ksoftirqd())
 		wakeup_softirqd();
 }
 
