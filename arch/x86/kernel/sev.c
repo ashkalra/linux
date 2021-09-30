@@ -2903,13 +2903,6 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 	return true;
 }
 
-static __always_inline bool on_hv_fallback_stack(struct pt_regs *regs)
-{
-	unsigned long sp = (unsigned long)regs;
-
-	return (sp >= __this_cpu_ist_bottom_va(HV2) && sp < __this_cpu_ist_top_va(HV2));
-}
-
 /*
  * Runtime #HV exception handler when raised from kernel mode. Runs in NMI mode
  * and will panic when an error happens.
@@ -2917,12 +2910,6 @@ static __always_inline bool on_hv_fallback_stack(struct pt_regs *regs)
 DEFINE_IDTENTRY_HV_KERNEL(exc_hv_injection)
 {
 	irqentry_state_t irq_state;
-
-	if (unlikely(on_hv_fallback_stack(regs))) {
-		instrumentation_begin();
-		panic("Can't handle #HV exception from unsupported context\n");
-		instrumentation_end();
-	}
 
 	irq_state = irqentry_nmi_enter(regs);
 	instrumentation_begin();
