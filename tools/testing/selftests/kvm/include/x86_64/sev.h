@@ -76,6 +76,8 @@ int sev_receive_start(struct sev_vm *sev, u32 policy, size_t pdh_len,
 		      unsigned char *session);
 void sev_send_finish(struct sev_vm *sev);
 void sev_receive_finish(struct sev_vm *sev);
+void sev_migrate_vmsas(struct sev_vm *source_sev, struct sev_vm *remote_sev);
+void sev_migrate_data(struct sev_vm *source_sev, struct sev_vm *remote_sev);
 
 struct sev_vm *sev_snp_vm_create(uint64_t policy, uint64_t npages);
 void sev_snp_vm_free(struct sev_vm *sev);

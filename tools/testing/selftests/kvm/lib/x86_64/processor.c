@@ -675,6 +675,22 @@ void vm_vcpu_add_default(struct kvm_vm *vm, uint32_t vcpuid, void *guest_code)
 	vcpu_set_mp_state(vm, vcpuid, &mp_state);
 }
 
+
+void vm_migrate_vcpus(struct kvm_vm *source_vm, struct kvm_vm *remote_vm)
+{
+	struct kvm_sregs sregs;
+	struct kvm_regs regs;
+	struct vcpu *vcpu;
+
+	list_for_each_entry(vcpu, &source_vm->vcpus, list) {
+		vcpu_sregs_get(source_vm, vcpu->id, &sregs);
+		vcpu_sregs_set(remote_vm, vcpu->id, &sregs);
+
+		vcpu_regs_get(source_vm, vcpu->id, &regs);
+		vcpu_regs_set(remote_vm, vcpu->id, &regs);
+	}
+}
+
 /*
  * Allocate an instance of struct kvm_cpuid2
  *

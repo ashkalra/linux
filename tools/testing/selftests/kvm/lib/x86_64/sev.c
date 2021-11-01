@@ -547,6 +547,52 @@ void sev_receive_finish(struct sev_vm *sev)
 	kvm_sev_ioctl(sev, KVM_SEV_RECEIVE_FINISH, 0);
 }
 
+void sev_migrate_vmsas(struct sev_vm *source_sev, struct sev_vm *remote_sev)
+{
+	vm_migrate_vcpus(sev_get_vm(source_sev), sev_get_vm(remote_sev));
+}
+
+void sev_migrate_data(struct sev_vm *source_sev, struct sev_vm *remote_sev)
+{
+	unsigned char *trans_buf, *send_packet_hdr = NULL;
+	struct kvm_vm *remote_vm = remote_sev->vm;
+	struct kvm_vm *source_vm = source_sev->vm;
+	size_t send_packet_hdr_len, trans_len;
+	uint8_t *remote_hva_ptr, *hva_ptr;
+	struct sparsebit *enc_phy_pages;
+	uint64_t memory_size;
+	vm_paddr_t gpa_start;
+	uint64_t remote_hva;
+	sparsebit_idx_t pg;
+	uint64_t gpa, hva;
+
+	/* Only memslot 0 supported for now. */
+	enc_phy_pages = vm_get_encrypted_phy_pages(source_vm, 0, &gpa_start, &memory_size);
+	TEST_ASSERT(enc_phy_pages, "Unable to retrieve encrypted pages bitmap");
+	for (pg = 0;  (pg < (memory_size / vm_get_page_size(source_vm))); pg++) {
+		if (sparsebit_is_set(enc_phy_pages, pg)) {
+			gpa = gpa_start + pg * vm_get_page_size(source_vm);
+			hva = (__u64)addr_gpa2hva(source_vm, gpa);
+			sev_send_update_data(source_sev,
+					     hva, vm_get_page_size(source_vm),
+					     &trans_buf, &send_packet_hdr,
+					     &send_packet_hdr_len, &trans_len);
+			remote_hva = (__u64)addr_gpa2hva(remote_vm, gpa);
+			sev_receive_update_data(remote_sev,
+						remote_hva, trans_buf, send_packet_hdr,
+						trans_len, send_packet_hdr_len);
+			free(trans_buf);
+		} else {
+			gpa = gpa_start + pg * vm_get_page_size(source_vm);
+			hva_ptr = addr_gpa2hva(source_vm, gpa);
+			remote_hva_ptr = addr_gpa2hva(remote_vm, gpa);
+			memcpy(remote_hva_ptr, hva_ptr, vm_get_page_size(source_vm));
+		}
+	}
+
+	sparsebit_free(&enc_phy_pages);
+}
+
 /* SEV-SNP VM implementation. */
 
 struct sev_vm *sev_snp_vm_create(uint64_t policy, uint64_t npages)

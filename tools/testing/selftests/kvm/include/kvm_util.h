@@ -307,6 +307,15 @@ struct kvm_vm *vm_create_with_vcpus(enum vm_guest_mode mode, uint32_t nr_vcpus,
  */
 void vm_vcpu_add_default(struct kvm_vm *vm, uint32_t vcpuid, void *guest_code);
 
+/*
+ * Migrate all vCPUs of a VM
+ *
+ * Input Args:
+ *   source_vm - Source Virtual Machine
+ *   remote_vm - Remote Virtual Machine
+ */
+void vm_migrate_vcpus(struct kvm_vm *source_vm, struct kvm_vm *remote_vm);
+
 bool vm_is_unrestricted_guest(struct kvm_vm *vm);
 
 unsigned int vm_get_page_size(struct kvm_vm *vm);
