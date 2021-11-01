@@ -336,6 +336,217 @@ void sev_vm_launch_finish(struct sev_vm *sev)
 		    "Unexpected guest state: %d", ksev_status.state);
 }
 
+int sev_get_pdh_info(struct sev_vm *sev, unsigned char **pdh, size_t *pdh_len,
+		     unsigned char **cert_chain, size_t *cert_chain_len)
+{
+	struct sev_user_data_pdh_cert_export export = {};
+	unsigned char *cert_chain_data = NULL;
+	unsigned char *pdh_data = NULL;
+	struct sev_issue_cmd arg;
+	int ret;
+
+	/* query the certificate length */
+
+	arg.cmd = SEV_PDH_CERT_EXPORT;
+	arg.data = (unsigned long)&export;
+	ret = ioctl(sev->fd, SEV_ISSUE_CMD, &arg);
+	if (ret < 0) {
+		TEST_ASSERT(arg.error == SEV_RET_INVALID_LEN,
+			    "failed to get PDH len ret=%d fw_err=%d",
+			    ret, arg.error);
+	}
+
+	pdh_data = malloc(export.pdh_cert_len);
+	cert_chain_data = malloc(export.cert_chain_len);
+	export.pdh_cert_address = (unsigned long)pdh_data;
+	export.cert_chain_address = (unsigned long)cert_chain_data;
+
+	sev_ioctl(sev->fd, SEV_PDH_CERT_EXPORT, &export);
+
+	*pdh = pdh_data;
+	*pdh_len = export.pdh_cert_len;
+	*cert_chain = cert_chain_data;
+	*cert_chain_len = export.cert_chain_len;
+
+	return 1;
+}
+
+static int sev_get_send_session_length(struct sev_vm *sev)
+{
+	struct kvm_sev_send_start start = {};
+	struct kvm_sev_cmd arg = {0};
+	int ret;
+
+	arg.id = KVM_SEV_SEND_START;
+	arg.sev_fd = sev->fd;
+	arg.data = (__u64)&start;
+
+	ret = ioctl(vm_get_fd(sev->vm), KVM_MEMORY_ENCRYPT_OP, &arg);
+	TEST_ASSERT(arg.error == SEV_RET_INVALID_LEN,
+		    "failed to get session length ret=%d fw_error=%d",
+		    ret, arg.error);
+
+	return start.session_len;
+}
+
+int sev_send_start(struct sev_vm *sev, u32 *policy, size_t *session_len,
+		   unsigned char **session, size_t remote_pdh_len,
+		   unsigned char *remote_pdh, size_t remote_plat_cert_len,
+		   unsigned char *remote_plat_cert, size_t amd_cert_len,
+		   unsigned char *amd_cert, size_t *source_pdh_len,
+		   unsigned char **source_pdh)
+{
+	struct kvm_sev_send_start start = {};
+	unsigned char *plat_cert = NULL;
+	size_t plat_cert_len;
+
+	start.pdh_cert_uaddr = (uintptr_t)remote_pdh;
+	start.pdh_cert_len = remote_pdh_len;
+
+	start.plat_certs_uaddr = (uintptr_t)remote_plat_cert;
+	start.plat_certs_len = remote_plat_cert_len;
+
+	start.amd_certs_uaddr = (uintptr_t)amd_cert;
+	start.amd_certs_len = amd_cert_len;
+
+	/* get the session length */
+	*session_len = sev_get_send_session_length(sev);
+	TEST_ASSERT(*session_len >= 0, "Unexpected session length");
+
+	*session = malloc(*session_len);
+	start.session_uaddr = (unsigned long)*session;
+	start.session_len = *session_len;
+
+	/* Get our PDH certificate */
+	sev_get_pdh_info(sev, source_pdh, source_pdh_len,
+			 &plat_cert, &plat_cert_len);
+
+	kvm_sev_ioctl(sev, KVM_SEV_SEND_START, &start);
+
+	*policy = start.policy;
+
+	/* guest is now in SEV_STATE_SEND_UPDATE state */
+
+	free(plat_cert);
+	return 1;
+}
+
+static int sev_send_get_packet_len(struct sev_vm *sev)
+{
+	struct kvm_sev_send_update_data update = {};
+	struct kvm_sev_cmd arg = {0};
+	int ret;
+
+	arg.id = KVM_SEV_SEND_UPDATE_DATA;
+	arg.sev_fd = sev->fd;
+	arg.data = (__u64)&update;
+
+	ret = ioctl(vm_get_fd(sev->vm), KVM_MEMORY_ENCRYPT_OP, &arg);
+	TEST_ASSERT(arg.error == SEV_RET_INVALID_LEN,
+		    "failed to get session length ret=%d fw_error=%d",
+		    ret, arg.error);
+
+	return update.hdr_len;
+}
+
+void sev_send_update_data(struct sev_vm *sev, uint64_t hva, uint32_t size,
+			  unsigned char **trans, unsigned char **send_packet_hdr,
+			  size_t *send_packet_hdr_len, size_t *trans_len)
+{
+	struct kvm_sev_send_update_data update = { };
+
+	/*
+	 * If this is first call then query the packet header bytes and allocate
+	 * the packet buffer.
+	 */
+	if (!*send_packet_hdr) {
+		*send_packet_hdr_len = sev_send_get_packet_len(sev);
+		*send_packet_hdr = malloc(*send_packet_hdr_len);
+	}
+
+	/* allocate transport buffer */
+	*trans = malloc(size);
+
+	update.hdr_uaddr = (uintptr_t)*send_packet_hdr;
+	update.hdr_len = *send_packet_hdr_len;
+	update.guest_uaddr = hva;
+	update.guest_len = size;
+	update.trans_uaddr = (uintptr_t)*trans;
+	update.trans_len = size;
+
+	if (!update.trans_uaddr || !update.guest_uaddr ||
+	    !update.guest_len || !update.hdr_uaddr)
+		pr_info("invalid args to send update data\n");
+
+	kvm_sev_ioctl(sev, KVM_SEV_SEND_UPDATE_DATA, &update);
+
+	*send_packet_hdr_len = update.hdr_len;
+	*trans_len = update.trans_len;
+}
+
+int sev_receive_start(struct sev_vm *sev, u32 policy, size_t pdh_len,
+		      unsigned char *pdh_cert, size_t session_len,
+		      unsigned char *session)
+
+{
+	struct kvm_sev_receive_start start = {};
+
+	start.handle = 0;
+
+	/* get the source policy */
+	start.policy = policy;
+
+	/* get source PDH key */
+	start.pdh_len = pdh_len;
+	start.pdh_uaddr = (uintptr_t)pdh_cert;
+
+	/* get source session data */
+	start.session_len = session_len;
+	start.session_uaddr = (uintptr_t)session;
+
+	kvm_sev_ioctl(sev, KVM_SEV_RECEIVE_START, &start);
+
+	/* guest is now in SEV_STATE_RECEIVE_UPDATE state */
+
+	return 1;
+}
+
+void sev_receive_update_data(struct sev_vm *sev, uint64_t hva,
+			     unsigned char *trans, unsigned char *hdr,
+			     size_t trans_len, size_t hdr_len)
+{
+	struct kvm_sev_receive_update_data update = {};
+
+	/* get packet header */
+	update.hdr_len = hdr_len;
+	update.hdr_uaddr = (uintptr_t)hdr;
+
+	/* get transport buffer */
+	update.trans_len = trans_len;
+	update.trans_uaddr = (uintptr_t)trans;
+
+	update.guest_uaddr = hva;
+	update.guest_len = update.trans_len;
+
+	if (!update.hdr_uaddr || !update.hdr_len ||
+	    !update.guest_uaddr || !update.guest_len ||
+	    !update.trans_uaddr || !update.trans_len)
+		pr_info("receive update data, invalid parameter\n");
+
+	kvm_sev_ioctl(sev, KVM_SEV_RECEIVE_UPDATE_DATA, &update);
+}
+
+void sev_send_finish(struct sev_vm *sev)
+{
+	kvm_sev_ioctl(sev, KVM_SEV_SEND_FINISH, 0);
+
+}
+
+void sev_receive_finish(struct sev_vm *sev)
+{
+	kvm_sev_ioctl(sev, KVM_SEV_RECEIVE_FINISH, 0);
+}
+
 /* SEV-SNP VM implementation. */
 
 struct sev_vm *sev_snp_vm_create(uint64_t policy, uint64_t npages)

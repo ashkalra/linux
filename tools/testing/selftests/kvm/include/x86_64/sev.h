@@ -63,6 +63,20 @@ void sev_vm_launch(struct sev_vm *sev);
 void sev_vm_measure(struct sev_vm *sev, uint8_t *measurement);
 void sev_vm_launch_finish(struct sev_vm *sev);
 
+int sev_get_pdh_info(struct sev_vm *sev, unsigned char **pdh, size_t *pdh_len,
+		     unsigned char **cert_chain, size_t *cert_chain_len);
+int sev_send_start(struct sev_vm *sev, u32 *policy, size_t *session_len,
+		   unsigned char **session, size_t remote_pdh_len,
+		   unsigned char *remote_pdh, size_t remote_plat_cert_len,
+		   unsigned char *remote_plat_cert, size_t amd_cert_len,
+		   unsigned char *amd_cert, size_t *source_pdh_len,
+		   unsigned char **source_pdh);
+int sev_receive_start(struct sev_vm *sev, u32 policy, size_t pdh_len,
+		      unsigned char *pdh_cert, size_t session_len,
+		      unsigned char *session);
+void sev_send_finish(struct sev_vm *sev);
+void sev_receive_finish(struct sev_vm *sev);
+
 struct sev_vm *sev_snp_vm_create(uint64_t policy, uint64_t npages);
 void sev_snp_vm_free(struct sev_vm *sev);
 void sev_snp_vm_launch(struct sev_vm *sev);
