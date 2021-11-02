@@ -593,6 +593,20 @@ void sev_migrate_data(struct sev_vm *source_sev, struct sev_vm *remote_sev)
 	sparsebit_free(&enc_phy_pages);
 }
 
+void sev_dbg_enc_dec(struct sev_vm *sev, uint8_t *dst,
+		     const uint8_t *src, uint32_t len, bool write)
+{
+	struct kvm_sev_dbg dbg;
+
+	dbg.src_uaddr = (unsigned long)src;
+	dbg.dst_uaddr = (unsigned long)dst;
+	dbg.len = len;
+
+	kvm_sev_ioctl(sev,
+		      write ? KVM_SEV_DBG_ENCRYPT : KVM_SEV_DBG_DECRYPT,
+		      &dbg);
+}
+
 /* SEV-SNP VM implementation. */
 
 struct sev_vm *sev_snp_vm_create(uint64_t policy, uint64_t npages)
