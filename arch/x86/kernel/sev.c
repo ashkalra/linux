@@ -2746,6 +2746,7 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 {
 	struct sev_hvdb_runtime_data *hvdb_data;
 	struct sev_es_runtime_data *data;
+	bool preempt_count_updated;
 	struct hvdb_events events;
 	u16 *pending_events;
 
@@ -2798,6 +2799,11 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 			if (hv_is_spurious_interrupt(gate)) {
 				exc_spurious_interrupt_bug(regs);
 				return true;
+			}
+
+			if (preempt_count() >= NMI_OFFSET) {
+				preempt_count_sub(NMI_OFFSET + HARDIRQ_OFFSET);
+				preempt_count_updated = true;
 			}
 
 			if (events.vector < FIRST_EXTERNAL_VECTOR) {
@@ -2898,6 +2904,12 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 				common_interrupt(regs, events.vector);
 			}
 		}
+
+		if (preempt_count_updated) {
+			preempt_count_add(NMI_OFFSET + HARDIRQ_OFFSET);
+			preempt_count_updated = false;
+		}
+
 	}
 
 	return true;
