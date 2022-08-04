@@ -2763,7 +2763,7 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 		u8 *nm_events;
 
 		nm_events = (u8 *)&hvdb_data->hvdb_page.events.nm_events;
-		events.nm_events = xchg(nm_events, 0x80);
+		events.nm_events = xchg(nm_events, 0);
 
 		if (events.nmi)
 			exc_nmi(regs);
