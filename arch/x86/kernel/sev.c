@@ -95,6 +95,11 @@ struct sev_hvdb_runtime_data {
 	 * interrupts were disabled.
 	 */
 	bool hv_pending_event;
+
+	/*
+	 * Indication that we are currently handling #HV events.
+	 */
+	bool hv_handling_events;
 };
 
 /* #VC handler runtime per-CPU data */
@@ -2813,6 +2818,7 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 		return true;
 	}
 
+	hvdb_data->hv_handling_events = true;
 	while (true) {
 		hvdb_data->hv_pending_event = false;
 
@@ -2868,6 +2874,7 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 		}
 
 	}
+	hvdb_data->hv_handling_events = false;
 
 	return true;
 }
@@ -2919,6 +2926,41 @@ DEFINE_IDTENTRY_HV_USER(exc_hv_injection)
 
 	instrumentation_end();
 	irqentry_exit_to_user_mode(regs);
+}
+
+noinstr void irqentry_exit_hv_cond(struct pt_regs *regs, irqentry_state_t state)
+{
+	struct sev_hvdb_runtime_data *hvdb_data;
+	struct sev_es_runtime_data *data;
+
+	data = this_cpu_read(runtime_data);
+	if (WARN_ON(!data))
+		irqentry_exit(regs, state);
+
+	hvdb_data = data->hvdb_data;
+	if (WARN_ON(!hvdb_data))
+		irqentry_exit(regs, state);
+
+	/*
+	 * Check whether this returns to user mode, if so and if
+	 * we are currently executing the #HV handler then we don't
+	 * want to follow the irqentry_exit_to_user_mode path as
+	 * that can potentially cause the #HV handler to be
+	 * preempted and rescheduled on another CPU. Rescheduled #HV
+	 * handler on another cpu will cause interrupts to be handled
+	 * on a different cpu than the injected one, causing
+	 * invalid EOIs and missed/lost guest interrupts and
+	 * corresponding hangs and/or per-cpu IRQs handled on
+	 * non-intended cpu.
+	 */
+
+	if (user_mode(regs) && hvdb_data->hv_handling_events) {
+		return;
+	}
+	else {
+		/* follow normal interrupt return/exit path */
+		irqentry_exit(regs, state);
+	}
 }
 
 void snp_handle_pending_hvdb(struct pt_regs *regs)
