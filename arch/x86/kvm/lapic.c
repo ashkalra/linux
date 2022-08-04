@@ -504,15 +504,9 @@ void kvm_apic_clear_irr(struct kvm_vcpu *vcpu, int vec)
 }
 EXPORT_SYMBOL_GPL(kvm_apic_clear_irr);
 
-static bool dump_once;
 static inline void apic_set_isr(int vec, struct kvm_lapic *apic)
 {
 	struct kvm_vcpu *vcpu;
-
-	if (!dump_once) {
-		dump_stack();
-		dump_once = true;
-	}
 
 	trace_kvm_inj_set_isr(apic->vcpu, vec);
 	if (__apic_test_and_set_vector(vec, apic->regs + APIC_ISR))
