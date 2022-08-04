@@ -604,17 +604,19 @@ TRACE_EVENT(kvm_inj_snp_int_blocked,
 
 	TP_STRUCT__entry(
 		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	vcpu_id		)
 		__field(	bool,		blocked	)
 		__field(	unsigned int,	reason		)
 	),
 
 	TP_fast_assign(
 		__entry->run_id		= vcpu->arch.run_id;
+		__entry->vcpu_id	= vcpu->vcpu_id;
 		__entry->blocked	= blocked;
 		__entry->reason		= reason;
 	),
 
-	TP_printk("id %lu, blocked %u, pending_event 0x%x", __entry->run_id, __entry->blocked, __entry->reason)
+	TP_printk("id %lu, vcpu %d, blocked %u, pending_event 0x%x", __entry->run_id, __entry->vcpu_id, __entry->blocked, __entry->reason)
 );
 
 TRACE_EVENT(kvm_inj_snp_queue_excp,
@@ -640,6 +642,7 @@ TRACE_EVENT(kvm_inj_snp_inject_hv_pre,
 
 	TP_STRUCT__entry(
 		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	vcpu_id		)
 		__field(	unsigned int,	event_inj	)
 		__field(	u16,	events		)
 		__field(	u8,	no_eoi		)
@@ -647,12 +650,13 @@ TRACE_EVENT(kvm_inj_snp_inject_hv_pre,
 
 	TP_fast_assign(
 		__entry->run_id		= vcpu->arch.run_id;
+		__entry->vcpu_id	= vcpu->vcpu_id;
 		__entry->event_inj	= event_inj;
 		__entry->events		= events;
 		__entry->no_eoi		= no_eoi;
 	),
 
-	TP_printk("id %lu, event_inj 0x%x, events 0x%x, no_eoi 0x%x", __entry->run_id, __entry->event_inj, __entry->events, __entry->no_eoi)
+	TP_printk("id %lu, vcpu %u, event_inj 0x%x, events 0x%x, no_eoi 0x%x", __entry->run_id, __entry->vcpu_id, __entry->event_inj, __entry->events, __entry->no_eoi)
 );
 
 TRACE_EVENT(kvm_inj_snp_inject_hv_post,
@@ -661,6 +665,7 @@ TRACE_EVENT(kvm_inj_snp_inject_hv_post,
 
 	TP_STRUCT__entry(
 		__field(	unsigned long,	run_id	)
+		__field(	unsigned int,	vcpu_id		)
 		__field(	unsigned int,	event_inj	)
 		__field(	u16,	events		)
 		__field(	u8,	no_eoi		)
@@ -668,12 +673,13 @@ TRACE_EVENT(kvm_inj_snp_inject_hv_post,
 
 	TP_fast_assign(
 		__entry->run_id		= vcpu->arch.run_id;
+		__entry->vcpu_id	= vcpu->vcpu_id;
 		__entry->event_inj	= event_inj;
 		__entry->events		= events;
 		__entry->no_eoi		= no_eoi;
 	),
 
-	TP_printk("id %lu, event_inj 0x%x, events 0x%x, no_eoi 0x%x", __entry->run_id, __entry->event_inj, __entry->events, __entry->no_eoi)
+	TP_printk("id %lu, vcpu %u, event_inj 0x%x, events 0x%x, no_eoi 0x%x", __entry->run_id, __entry->vcpu_id, __entry->event_inj, __entry->events, __entry->no_eoi)
 );
 
 TRACE_EVENT(kvm_inj_event_inj_vcpu_run,
