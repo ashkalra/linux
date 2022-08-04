@@ -3565,6 +3565,8 @@ static int sev_snp_hv_doorbell_page(struct vcpu_svm *svm)
 	request = svm->vmcb->control.exit_info_1;
 	hvdb_gpa = svm->vmcb->control.exit_info_2;
 
+	svm->snp_hv_doorbell_config_done = true;
+
 	switch (request) {
 	case SVM_VMGEXIT_HVDB_GET_PREFERRED:
 		svm_set_ghcb_sw_exit_info_2(vcpu, 0xffffffffffffffff);
@@ -3967,6 +3969,7 @@ void sev_es_create_vcpu(struct vcpu_svm *svm)
 	mutex_init(&svm->snp_vmsa_mutex);
 	svm->snp_vmsa_pfn = INVALID_PAGE;
 	svm->hvdb_gpa = INVALID_PAGE;
+	svm->snp_hv_doorbell_config_done = false;
 }
 
 void sev_es_prepare_guest_switch(struct vcpu_svm *svm, unsigned int cpu)
@@ -4243,6 +4246,9 @@ static void unmap_hvdb(struct kvm_vcpu *vcpu, struct kvm_host_map *map)
 static struct hvdb *map_hvdb(struct kvm_vcpu *vcpu, struct kvm_host_map *map)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
+
+	if (!(svm->snp_hv_doorbell_config_done))
+	    return NULL;
 
 	memset(map, 0, sizeof(*map));
 

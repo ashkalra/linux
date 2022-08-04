@@ -233,6 +233,7 @@ struct vcpu_svm {
 	bool snp_vmsa_update_on_init;	/* SEV-SNP AP Creation on INIT-SIPI */
 
 	gpa_t hvdb_gpa;
+	bool snp_hv_doorbell_config_done;
 };
 
 struct svm_cpu_data {
