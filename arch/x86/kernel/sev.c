@@ -166,6 +166,15 @@ DEFINE_STATIC_KEY_FALSE(sev_es_enable_key);
 
 static DEFINE_PER_CPU(struct sev_es_save_area *, snp_vmsa);
 
+static void (*sysvec_table[NR_VECTORS - FIRST_SYSTEM_VECTOR])(struct pt_regs *regs) __ro_after_init;
+
+struct __attribute__ ((__packed__)) sysvec_entry {
+	unsigned char vector;
+	void (*sysvec_func)(struct pt_regs *regs);
+};
+
+extern struct sysvec_entry __system_vectors[], __system_vectors_end[];
+
 /* Needed in vc_early_forward_exception */
 void do_early_exception(struct pt_regs *regs, int trapnr);
 
@@ -1352,6 +1361,15 @@ static void __init init_ghcb(int cpu)
 	data->snp_ghcb_registered = false;
 }
 
+static void __init construct_sysvec_table(void)
+{
+	struct sysvec_entry *p;
+
+	for (p = __system_vectors; p < __system_vectors_end; p++) {
+		sysvec_table[p->vector - FIRST_SYSTEM_VECTOR] = p->sysvec_func;
+	}
+}
+
 static void __init init_hvdb(int cpu)
 {
 	struct sev_hvdb_runtime_data *hvdb_data;
@@ -1450,6 +1468,7 @@ void __init sev_init_exception_handling(void)
 		if (unlikely(boot_ghcb == NULL && !setup_ghcb()))
 			sev_es_terminate(0, GHCB_SEV_ES_GEN_REQ);
 		__snp_set_hvdb(boot_ghcb);
+		construct_sysvec_table();
 	}
 
 	sev_es_setup_play_dead();
@@ -2815,91 +2834,10 @@ static bool hv_raw_handle_exception(struct pt_regs *regs)
 				WARN(1, "syscall shouldn't happen\n");
 			} else if (events.vector >= FIRST_SYSTEM_VECTOR) {
 				/* System vectors */
-				switch (events.vector) {
-	#ifdef CONFIG_X86_LOCAL_APIC
-				case LOCAL_TIMER_VECTOR:
-					sysvec_apic_timer_interrupt(regs);
-					break;
-				case X86_PLATFORM_IPI_VECTOR:
-					sysvec_x86_platform_ipi(regs);
-					break;
-				case ERROR_APIC_VECTOR:
-					sysvec_error_interrupt(regs);
-					break;
-				case SPURIOUS_APIC_VECTOR:
-					sysvec_spurious_apic_interrupt(regs);
-					break;
-	# ifdef CONFIG_X86_MCE_AMD
-				case DEFERRED_ERROR_VECTOR:
-					sysvec_deferred_error(regs);
-					break;
-	# endif
-	# ifdef CONFIG_IRQ_WORK
-				case IRQ_WORK_VECTOR:
-					sysvec_irq_work(regs);
-					break;
-	# endif
-	# ifdef CONFIG_X86_MCE_THRESHOLD
-				case THRESHOLD_APIC_VECTOR:
-					sysvec_threshold(regs);
-					break;
-	# endif
-	# ifdef CONFIG_X86_THERMAL_VECTOR
-				case THERMAL_APIC_VECTOR:
-					sysvec_thermal(regs);
-					break;
-	# endif
-	#endif
-
-	#if IS_ENABLED(CONFIG_HYPERV)
-				case HYPERV_STIMER0_VECTOR:
-					sysvec_hyperv_stimer0(regs);
-					break;
-				case HYPERV_REENLIGHTENMENT_VECTOR:
-					sysvec_hyperv_reenlightenment(regs);
-					break;
-	#if 0
-				case HYPERVISOR_CALLBACK_VECTOR:
-					sysvec_hyperv_callback(regs);
-					break;
-	#endif
-	#endif
-
-	#ifdef CONFIG_KVM_GUEST
-	#if 0
-				case HYPERVISOR_CALLBACK_VECTOR:
-					sysvec_kvm_asyncpf_interrupt(regs);
-					break;
-	#endif
-	#endif
-
-	#ifdef CONFIG_HAVE_KVM
-				case POSTED_INTR_NESTED_VECTOR:
-					sysvec_kvm_posted_intr_nested_ipi(regs);
-					break;
-				case POSTED_INTR_WAKEUP_VECTOR:
-					sysvec_kvm_posted_intr_wakeup_ipi(regs);
-					break;
-				case POSTED_INTR_VECTOR:
-					sysvec_kvm_posted_intr_ipi(regs);
-					break;
-	#endif
-
-	#ifdef CONFIG_SMP
-				case REBOOT_VECTOR:
-					sysvec_reboot(regs);
-					break;
-				case CALL_FUNCTION_SINGLE_VECTOR:
-					sysvec_call_function_single(regs);
-					break;
-				case CALL_FUNCTION_VECTOR:
-					sysvec_call_function(regs);
-					break;
-				case RESCHEDULE_VECTOR:
-					sysvec_reschedule_ipi(regs);
-					break;
-	#endif
-				}
+				if (!(sysvec_table[events.vector - FIRST_SYSTEM_VECTOR]))
+					WARN(1, "system vector entry 0x%x is NULL\n", events.vector);
+				else
+					(*sysvec_table[events.vector - FIRST_SYSTEM_VECTOR])(regs);
 			} else {
 				common_interrupt(regs, events.vector);
 			}
