@@ -350,6 +350,8 @@ static int softlockup_fn(void *data)
 	return 0;
 }
 
+extern void dump_hvdb_data(void);
+
 /* watchdog kicker functions */
 static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 {
@@ -427,6 +429,7 @@ static enum hrtimer_restart watchdog_timer_fn(struct hrtimer *hrtimer)
 		pr_emerg("BUG: soft lockup - CPU#%d stuck for %us! [%s:%d]\n",
 			smp_processor_id(), duration,
 			current->comm, task_pid_nr(current));
+		dump_hvdb_data();
 		print_modules();
 		print_irqtrace_events(current);
 		if (regs)

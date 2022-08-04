@@ -2761,6 +2761,25 @@ static gate_desc *hv_get_gate_desc(unsigned int vector)
 	return (gate_desc *)idt.address + vector;
 }
 
+void dump_hvdb_data(void)
+{
+	struct sev_hvdb_runtime_data *hvdb_data;
+	struct sev_es_runtime_data *data;
+	int cpu;
+
+	pr_err("current cpu = %d\n", smp_processor_id());
+	data = this_cpu_read(runtime_data);
+	hvdb_data = data->hvdb_data;
+	pr_err("cpu %d, pending_events = 0x%x\n", smp_processor_id(), hvdb_data->hvdb_page.events.pending_events);
+
+	for_each_online_cpu(cpu) {
+		data = per_cpu(runtime_data, cpu);
+		hvdb_data = data->hvdb_data;
+		pr_err("cpu %d, hvdb_data = %x, pending_events = 0x%x\n", cpu, hvdb_data, hvdb_data->hvdb_page.events.pending_events);
+	}
+}
+EXPORT_SYMBOL(dump_hvdb_data);
+
 static bool hv_raw_handle_exception(struct pt_regs *regs)
 {
 	struct sev_hvdb_runtime_data *hvdb_data;
