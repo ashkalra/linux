@@ -2943,9 +2943,23 @@ void snp_handle_pending_hvdb(struct pt_regs *regs)
 	if (!hvdb_data->hv_pending_event)
 		return;
 
-	if (regs)
+	if (regs) {
+		unsigned long flags;
+
+		/*
+		 * Maintain consistent behavior of doing #HV exception with interrupts
+		 * disabled, this also ensures that for any reentrant #HV exceptions we
+		 * will only handle NMIs.
+		 */
+		local_irq_save(flags);
 		hv_raw_handle_exception(regs);
-	else
+		/*
+		 * NOTE: arch_local_irq_restore() will make another recursive
+		 * call to snp_handle_pending_hvdb(), so do native flag restore.
+		 */
+		asm volatile("push %0; popf" : :"r"(flags) : "memory", "cc");
+	} else {
 		asm volatile("int %0" : : "i" (X86_TRAP_HV));
+	}
 }
 EXPORT_SYMBOL(snp_handle_pending_hvdb);
