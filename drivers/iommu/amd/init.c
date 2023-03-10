@@ -3655,9 +3655,11 @@ int amd_iommu_snp_enable(void)
 
 static int iommu_page_make_shared(void *page)
 {
-	unsigned long pfn;
+	unsigned long paddr, pfn;
 
-	pfn = iommu_virt_to_phys(page) >> PAGE_SHIFT;
+	paddr = iommu_virt_to_phys(page);
+	/* Cbit maybe set in the paddr */
+	pfn = __sme_clr(paddr) >> PAGE_SHIFT;
 	return rmp_make_shared(pfn, PG_LEVEL_4K);
 }
 
