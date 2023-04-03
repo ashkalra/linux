@@ -1465,10 +1465,24 @@ static int __sev_snp_init_locked(int *error)
 		data.list_paddr_en = 1;
 		data.list_paddr = __pa(snp_range_list);
 
+		/*
+		 * Before invoking SNP_INIT_EX with INIT_RMP=1, we need to ensure that all
+		 * dirty cache lines containing the RMP are flushed and this includes all
+		 * RMPUPDATES as they are cacheable writes to RMP.
+		 */
+		wbinvd_on_all_cpus();
+
 		rc = __sev_do_cmd_locked(SEV_CMD_SNP_INIT_EX, &data, error);
 		if (rc)
 			return rc;
 	} else {
+		/*
+		 * Before invoking SNP_INIT_EX with INIT_RMP=1, we need to ensure that all
+		 * dirty cache lines containing the RMP are flushed and this includes all
+		 * RMPUPDATES as they are cacheable writes to RMP.
+		 */
+		wbinvd_on_all_cpus();
+
 		rc = __sev_do_cmd_locked(SEV_CMD_SNP_INIT, NULL, error);
 		if (rc)
 			return rc;
