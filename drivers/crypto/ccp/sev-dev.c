@@ -1438,14 +1438,12 @@ static int __sev_snp_init_locked(int *error)
 		 * in the RANGES structure are either in the Default page state or in the
 		 * firmware page state.
 		 */
-		snp_range_list = sev_fw_alloc(PAGE_SIZE);
+		snp_range_list = kzalloc(PAGE_SIZE, GFP_KERNEL);
 		if (!snp_range_list) {
 			dev_err(sev->dev,
 				"SEV: SNP_INIT_EX range list memory allocation failed\n");
 			return -ENOMEM;
 		}
-
-		memset(snp_range_list, 0, PAGE_SIZE);
 
 		/*
 		 * Retrieve all reserved memory regions setup by UEFI from the e820 memory map
@@ -1463,7 +1461,7 @@ static int __sev_snp_init_locked(int *error)
 		memset(&data, 0, sizeof(data));
 		data.init_rmp = 1;
 		data.list_paddr_en = 1;
-		data.list_paddr = __pa(snp_range_list);
+		data.list_paddr = __psp_pa(snp_range_list);
 
 		/*
 		 * Before invoking SNP_INIT_EX with INIT_RMP=1, we need to ensure that all
