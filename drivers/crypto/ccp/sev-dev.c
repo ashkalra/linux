@@ -2311,7 +2311,7 @@ static void sev_firmware_shutdown(struct sev_device *sev)
 	}
 
 	if (snp_range_list) {
-		snp_free_firmware_page(snp_range_list);
+		kfree(snp_range_list);
 		snp_range_list = NULL;
 	}
 
