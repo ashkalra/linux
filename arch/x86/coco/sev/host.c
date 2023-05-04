@@ -286,10 +286,8 @@ void sev_dump_rmpentry(u64 pfn)
 	}
 
 	if (rmpentry_assigned(e)) {
-		pr_info("RMPEntry paddr 0x%llx [assigned=%d immutable=%d pagesize=%d gpa=0x%lx asid=%d vmsa=%d validated=%d]\n",
-			pfn << PAGE_SHIFT, rmpentry_assigned(e), e->info.immutable,
-			rmpentry_pagesize(e), (unsigned long)e->info.gpa, e->info.asid,
-			e->info.vmsa, e->info.validated);
+		pr_info("RMPEntry paddr 0x%llx: [high=0x%016llx low=0x%016llx]\n",
+			pfn << PAGE_SHIFT, e->high, e->low);
 		return;
 	}
 
