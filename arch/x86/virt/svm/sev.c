@@ -164,12 +164,12 @@ static __init int __snp_rmptable_init(void)
 	if (!snp_get_rmptable_info(&rmp_base, &rmp_size))
 		return 1;
 
-	pr_info("RMP table physical address [0x%016llx - 0x%016llx]\n",
+	pr_info("RMP table physical range [0x%016llx - 0x%016llx]\n",
 		rmp_base, rmp_base + rmp_size - 1);
 
 	rmp_start = memremap(rmp_base, rmp_size, MEMREMAP_WB);
 	if (!rmp_start) {
-		pr_err("Failed to map RMP table addr 0x%llx size 0x%llx\n", rmp_base, rmp_size);
+		pr_err("Failed to map RMP table\n");
 		return 1;
 	}
 
@@ -181,16 +181,14 @@ static __init int __snp_rmptable_init(void)
 	if (val & MSR_AMD64_SYSCFG_SNP_EN)
 		goto skip_enable;
 
-	/* Initialize the RMP table to zero */
 	memset(rmp_start, 0, rmp_size);
 
 	/* Flush the caches to ensure that data is written before SNP is enabled. */
 	wbinvd_on_all_cpus();
 
-	/* MFDM must be enabled on all the CPUs prior to enabling SNP. */
+	/* MtrrFixDramModEn must be enabled on all the CPUs prior to enabling SNP. */
 	on_each_cpu(mfd_enable, NULL, 1);
 
-	/* Enable SNP on all CPUs. */
 	on_each_cpu(snp_enable, NULL, 1);
 
 skip_enable:
