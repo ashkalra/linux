@@ -1107,7 +1107,7 @@ static int snp_filter_reserved_mem_regions(struct resource *rs, void *arg)
 	case E820_TYPE_PMEM:
 	case E820_TYPE_ACPI:
 		range->base = rs->start & PAGE_MASK;
-		size = (rs->end + 1) - rs->start;
+		size = PAGE_ALIGN((rs->end + 1) - rs->start);
 		range->page_count = size >> PAGE_SHIFT;
 		range_list->num_elements++;
 		break;
