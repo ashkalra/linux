@@ -195,8 +195,9 @@ static int psp_check_sfs_support(struct psp_device *psp)
 {
 	/* Check if device supports SFS feature */
 	if (!PSP_CAPABILITY(psp, SFS)) {
-		dev_dbg(psp->dev, "psp does not support SFS\n");
-		return -ENODEV;
+		//dev_dbg(psp->dev, "psp does not support SFS\n");
+		pr_info("psp does not support SFS\n");
+		//return -ENODEV;
 	}
 
 	return 0;
