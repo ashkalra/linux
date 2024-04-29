@@ -12,6 +12,7 @@
 #include "sfs.h"
 
 #define SFS_DEFAULT_TIMEOUT		(5 * 60 * MSEC_PER_SEC)
+#define ORDER_2MB 9
 
 /* SFS Status values */
 #define SFS_SUCCESS			0x00
@@ -59,9 +60,11 @@ static int send_sfs_get_fw_versions(struct psp_sfs_device *sfs_dev)
 {
 	int ret;
 
+#if 0
 	sfs_dev->command_hdr = (void *)devm_get_free_pages(sfs_dev->dev, GFP_KERNEL | __GFP_ZERO, 1);
 	if (!sfs_dev->command_hdr) 
 		return -ENOMEM;
+#endif
 
 	sfs_dev->payload_size = &sfs_dev->command_hdr->ext_req.header.payload_size;
 	sfs_dev->result = &sfs_dev->command_hdr->ext_req.header.status;
@@ -82,7 +85,7 @@ static int send_sfs_update_package(struct psp_sfs_device *sfs_dev, char *payload
 	char payload_path[PAYLOAD_NAME_SIZE];
 	const struct firmware *firmware;
 	unsigned long package_size; 
-	int order, ret;
+	int ret;
 
 	sprintf(payload_path, "amd/%s", payload_name);
 
@@ -94,11 +97,13 @@ static int send_sfs_update_package(struct psp_sfs_device *sfs_dev, char *payload
 	/* SFS Update Package should be 64KB aligned */
 	package_size = ALIGN(firmware->size + PAGE_SIZE, 0x10000U);
 
+#if 0
 	order = get_order(package_size);
 	sfs_dev->command_hdr = (void *)devm_get_free_pages(sfs_dev->dev, GFP_KERNEL | __GFP_ZERO, order);
 	if (!sfs_dev->command_hdr) {
 		return -ENOMEM;
 	}
+#endif
 
 	sfs_dev->payload_size = &sfs_dev->command_hdr->ext_req.header.payload_size;
 	sfs_dev->result = &sfs_dev->command_hdr->ext_req.header.status;
@@ -196,8 +201,10 @@ static long sfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	}
 
 unlock:
+#if 0
 	if (sfs_dev->command_hdr)
 		devm_free_pages(sfs_dev->dev, (unsigned long)sfs_dev->command_hdr);
+#endif
 	mutex_unlock(&sfs_dev->ioctl_mutex);
 
 	return ret;
@@ -212,6 +219,7 @@ int sfs_dev_init(struct psp_device *psp)
 {
 	struct device *dev = psp->dev;
 	struct psp_sfs_device *sfs_dev;
+	struct page *page;
 	int ret;
 
 	sfs_dev = devm_kzalloc(dev, sizeof(*sfs_dev), GFP_KERNEL);
@@ -219,6 +227,11 @@ int sfs_dev_init(struct psp_device *psp)
 		return -ENOMEM;
 
 	BUILD_BUG_ON(sizeof(struct sfs_command) > PAGE_SIZE);
+
+	page = alloc_pages(GFP_KERNEL | __GFP_ZERO, ORDER_2MB);
+	if (!page)
+		return -ENOMEM;
+	sfs_dev->command_hdr = page_address(page);
 
 	psp->sfs_data = sfs_dev;
 	sfs_dev->dev = dev;
@@ -240,6 +253,7 @@ int sfs_dev_init(struct psp_device *psp)
 	return 0;
 
 cleanup_cmd_hdr:
+	free_page((unsigned long)page_address(page));
 	psp->sfs_data = NULL;
 	devm_kfree(dev, sfs_dev);
 
