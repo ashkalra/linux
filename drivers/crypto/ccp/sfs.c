@@ -11,7 +11,7 @@
 
 #include "sfs.h"
 
-#define SFS_DEFAULT_TIMEOUT		(10 * MSEC_PER_SEC)
+#define SFS_DEFAULT_TIMEOUT		(5 * 60 * MSEC_PER_SEC)
 
 /* SFS Status values */
 #define SFS_SUCCESS			0x00
@@ -225,6 +225,7 @@ int sfs_dev_init(struct psp_device *psp)
 	sfs_dev->psp = psp;
 
 	dev_dbg(sfs_dev->dev, "seamless firmware serviving support is available\n");
+	pr_info("seamless firmware serviving support is available, timeout = %d msecs\n", SFS_DEFAULT_TIMEOUT);
 
 	sfs_dev->char_dev.minor = MISC_DYNAMIC_MINOR;
 	sfs_dev->char_dev.name = "sfs";
