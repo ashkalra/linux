@@ -246,7 +246,7 @@ static long sfs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (copy_to_user(argp + PAYLOAD_NAME_SIZE + sizeof(u32), sfs_dev->payload, sizeof(u32))) {
 			ret = -EFAULT;
 		}
-
+		break;
 	default:
 		ret = -EINVAL;
 	}
