@@ -345,6 +345,7 @@ static int sev_guest_init(struct kvm *kvm, struct kvm_sev_cmd *argp)
 		ret = verify_snp_init_flags(kvm, argp);
 		if (ret)
 			goto e_free;
+		sev->arg_info.initialized = false;
 	}
 
 	init_args.probe = false;
@@ -1996,6 +1997,10 @@ static void *snp_context_create(struct kvm *kvm, struct kvm_sev_cmd *argp)
 		return NULL;
 
 	data.gctx_paddr = __psp_pa(context);
+	/* TODO: check if ARG initialized, if true make ARGcall */
+	/* setup ARG_GCTX parameters */
+	/*	kvm_vcpu_kick(target_vcpu); --> target_vcpu = ARG BP vCPU */
+	/* else */
 	rc = __sev_issue_cmd(argp->sev_fd, SEV_CMD_SNP_GCTX_CREATE, &data, &argp->error);
 	if (rc) {
 		snp_free_firmware_page(context);
@@ -3155,6 +3160,7 @@ static int sev_es_validate_vmgexit(struct vcpu_svm *svm)
 	case SVM_VMGEXIT_GUEST_REQUEST:
 	case SVM_VMGEXIT_EXT_GUEST_REQUEST:
 	case SVM_VMGEXIT_RUN_VMPL:
+	case SVM_VMGEXIT_ARG_RDYFORCMD:
 		break;
 	default:
 		reason = GHCB_ERR_INVALID_EVENT;
@@ -3924,6 +3930,8 @@ static void sev_run_vmpl_vmsa(struct vcpu_svm *svm)
 	unsigned int vmpl;
 	int ret;
 
+	pr_info("in %s\n", __func__);
+
 	/* TODO: Does this need to be synced for original VMPL ... */
 	ghcb_set_sw_exit_info_1(ghcb, 0);
 	ghcb_set_sw_exit_info_2(ghcb, 0);
@@ -4094,6 +4102,56 @@ static int sev_handle_vmgexit_msr_protocol(struct vcpu_svm *svm)
 	return ret;
 }
 
+static int kvm_arg_rdyforcmd_handler(struct kvm_vcpu *vcpu, int last_arg_cmd, int last_arg_resp)
+{
+	struct vcpu_svm *svm = to_svm(vcpu);
+	struct kvm_sev_info *sev;
+	kvm_pfn_t arg_cmd_pfn;
+	gpa_t arg_cmd_gpa;
+	int req_cmd = 0;
+
+	sev = &to_kvm_svm(svm->vcpu.kvm)->sev_info;
+	arg_cmd_gpa = vcpu->arch.regs[VCPU_REGS_RAX];
+
+	switch(last_arg_cmd) {
+		case 0:
+			if (!sev->arg_info.initialized) {
+				pr_info("arg_cmd_gpa = 0x%llx\n", arg_cmd_gpa);
+				if (!IS_ALIGNED(arg_cmd_gpa, PAGE_SIZE))
+					return -1;
+
+				arg_cmd_pfn = gfn_to_pfn(svm->vcpu.kvm, gpa_to_gfn(arg_cmd_gpa));
+				if (is_error_noslot_pfn(arg_cmd_pfn))
+					return -1;
+
+				pr_info("arg_cmd_pfn = 0x%llx\n", arg_cmd_pfn);
+				req_cmd = SNP_ARG_INITIALIZE;
+			}
+			/* TODO:
+			 * suspend ARG VM here, we don't want to do a VMRUN here */
+			break;
+		case SNP_ARG_INITIALIZE:
+			if (!last_arg_resp) {
+				pr_info("SNP ARG is now initialized\n");
+				sev->arg_info.initialized = true;
+				req_cmd = SNP_GCTX_CREATE;
+			}
+			break;
+		case SNP_GCTX_CREATE:
+			if (!last_arg_resp) {
+				pr_info("halting vcpu 0x%lx\n", (unsigned long)vcpu);
+				vcpu->arch.apf.halted = true;
+				vcpu->arch.mp_state = KVM_MP_STATE_HALTED;
+				//kvm_vcpu_halt(vcpu);
+				//pr_info("after wakeup vcpu\n");
+			}
+			break;
+		default: ;
+			/* NOP */
+	}
+	return req_cmd;
+}
+
 int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_svm *svm = to_svm(vcpu);
@@ -4237,6 +4295,15 @@ int sev_handle_vmgexit(struct kvm_vcpu *vcpu)
 		break;
 	case SVM_VMGEXIT_RUN_VMPL:
 		sev_run_vmpl_vmsa(svm);
+
+		ret = 1;
+		break;
+	case SVM_VMGEXIT_ARG_RDYFORCMD:
+		int response;
+
+		pr_info("handling GHCB ARG RDYFORCD requests, request = 0x%lld\n", control->exit_info_1);
+		response = kvm_arg_rdyforcmd_handler(vcpu, control->exit_info_1, control->exit_info_2);
+		ghcb_set_sw_exit_info_2(svm->sev_es.ghcb, response);
 
 		ret = 1;
 		break;

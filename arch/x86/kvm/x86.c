@@ -11202,6 +11202,7 @@ static int vcpu_run(struct kvm_vcpu *vcpu)
 		if (kvm_vcpu_running(vcpu)) {
 			r = vcpu_enter_guest(vcpu);
 		} else {
+			pr_info("vcpu block on vcpu 0x%lx\n", (unsigned long)vcpu);
 			r = vcpu_block(vcpu);
 		}
 

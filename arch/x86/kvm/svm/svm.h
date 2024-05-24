@@ -79,6 +79,17 @@ enum {
 /* Supported init feature flags */
 #define SEV_SNP_SUPPORTED_FLAGS		(KVM_SEV_SNP_RESTRICTED_INJET | KVM_SEV_SNP_SVSM)
 
+enum {
+	SNP_ARG_INITIALIZE = 1,
+	SNP_GCTX_CREATE,
+};
+
+struct snp_arg_info {
+	bool initialized;
+	bool ready_for_next_command;
+	/* TODO: keep track of VMCB/VMSA setup for ARG */
+};
+
 struct kvm_sev_info {
 	bool active;		/* SEV enabled guest */
 	bool es_active;		/* SEV-ES enabled guest */
@@ -96,6 +107,7 @@ struct kvm_sev_info {
 	atomic_t migration_in_progress;
 	u64 snp_init_flags;
 	void *snp_context;      /* SNP guest context page */
+	struct snp_arg_info arg_info; /* SNP arg guest information */
 	u64 sev_features[SVM_SEV_VMPL_MAX]; /* Features set at VMSA creation */
 };
 
