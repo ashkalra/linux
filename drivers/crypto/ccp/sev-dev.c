@@ -1163,8 +1163,35 @@ static int snp_filter_reserved_mem_regions(struct resource *rs, void *arg)
 	return 0;
 }
 
+static int snp_append_hypervisor_fixed_pages_kernel(struct sev_data_range_list *dest, struct sev_data_range_list *src)
+{
+	struct sev_data_range *krange, *range;
+	int i = 0;
+
+	/*
+	 * Ensure the list of HV_FIXED pages that will be passed to firmware
+	 * do not exceed the page-sized argument buffer.
+	 */
+	if ((dest->num_elements * sizeof(struct sev_data_range) +
+	     src->num_elements * sizeof(struct sev_data_range) +
+	     sizeof(struct sev_data_range_list)) > PAGE_SIZE)
+		return -E2BIG;
+
+	while (src->num_elements--) {
+		range = &dest->ranges[dest->num_elements];
+		krange = &src->ranges[i++];
+		/* in-kernel hv_fixed list contains PFN as base */
+		range->base = krange->base << PAGE_SHIFT;
+		range->page_count = krange->page_count;
+		dest->num_elements++;
+	}
+
+	return 0;
+}
+
 static int __sev_snp_init_locked(int *error)
 {
+	struct sev_data_range_list *snp_range_list_kernel;
 	struct psp_device *psp = psp_master;
 	struct sev_data_snp_init_ex data;
 	struct sev_device *sev;
@@ -1184,6 +1211,8 @@ static int __sev_snp_init_locked(int *error)
 			SNP_MIN_API_MAJOR, SNP_MIN_API_MINOR);
 		return 0;
 	}
+
+	snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_IN_PROGRESS);
 
 	/* SNP_INIT requires MSR_VM_HSAVE_PA to be cleared on all CPUs. */
 	on_each_cpu(snp_set_hsave_pa, NULL, 1);
@@ -1206,6 +1235,7 @@ static int __sev_snp_init_locked(int *error)
 		 */
 		snp_range_list = kzalloc(PAGE_SIZE, GFP_KERNEL);
 		if (!snp_range_list) {
+			snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_FAILED);
 			dev_err(sev->dev,
 				"SEV: SNP_INIT_EX range list memory allocation failed\n");
 			return -ENOMEM;
@@ -1218,10 +1248,41 @@ static int __sev_snp_init_locked(int *error)
 		rc = walk_iomem_res_desc(IORES_DESC_NONE, IORESOURCE_MEM, 0, ~0,
 					 snp_range_list, snp_filter_reserved_mem_regions);
 		if (rc) {
+			snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_FAILED);
 			dev_err(sev->dev,
 				"SEV: SNP_INIT_EX walk_iomem_res_desc failed rc = %d\n", rc);
 			return rc;
 		}
+
+		/*
+		 * Get the in-kernel hypervisor fixed pages list and append it to the
+		 * already populated snp_range_list.
+		 */
+		snp_range_list_kernel = kzalloc(PAGE_SIZE, GFP_KERNEL);
+		if (!snp_range_list_kernel) {
+			snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_FAILED);
+			dev_err(sev->dev,
+				"SEV: SNP_INIT_EX kernel range list memory allocation failed\n");
+			return -ENOMEM;
+		}
+
+		rc = snp_get_hypervisor_fixed_pages(snp_range_list_kernel);
+		if (rc) {
+			snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_FAILED);
+			dev_err(sev->dev,
+				"SEV: SNP_INIT_EX get hypervisor fixed pages list failed rc = %d\n", rc);
+			return rc;
+		}
+
+		rc = snp_append_hypervisor_fixed_pages_kernel(snp_range_list, snp_range_list_kernel);
+		if (rc) {
+			snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_FAILED);
+			dev_err(sev->dev,
+				"SEV: SNP_INIT_EX append hypervisor fixed pages list failed rc = %d\n", rc);
+			return rc;
+		}
+
+		kfree(snp_range_list_kernel);
 
 		memset(&data, 0, sizeof(data));
 		data.init_rmp = 1;
@@ -1246,16 +1307,21 @@ static int __sev_snp_init_locked(int *error)
 	wbinvd_on_all_cpus();
 
 	rc = __sev_do_cmd_locked(cmd, arg, error);
-	if (rc)
+	if (rc) {
+		snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_FAILED);
 		return rc;
+	}
 
 	/* Prepare for first SNP guest launch after INIT. */
 	wbinvd_on_all_cpus();
 	rc = __sev_do_cmd_locked(SEV_CMD_SNP_DF_FLUSH, NULL, error);
-	if (rc)
+	if (rc) {
+		snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_FAILED);
 		return rc;
+	}
 
 	sev->snp_initialized = true;
+	snp_hypervisor_fixed_pages_notify_state_change(SNP_INIT_DONE);
 	dev_dbg(sev->dev, "SEV-SNP firmware initialized\n");
 
 	sev_es_tmr_size = SNP_TMR_SIZE;
@@ -1782,6 +1848,7 @@ static int __sev_snp_shutdown_locked(int *error, bool panic)
 	}
 
 	sev->snp_initialized = false;
+	snp_hypervisor_fixed_pages_notify_state_change(SNP_SHUTDOWN);
 	dev_dbg(sev->dev, "SEV-SNP firmware shutdown\n");
 
 	return ret;
@@ -2469,6 +2536,8 @@ void sev_pci_init(void)
 
 	if (sev_update_firmware(sev->dev) == 0)
 		sev_get_api_version();
+
+	snp_register_hypervisor_fixed_pages_backend_op(rmp_make_hv_fixed);
 
 	/* Initialize the platform */
 	args.probe = true;
