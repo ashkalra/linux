@@ -18,6 +18,7 @@
 #include <linux/cpumask.h>
 #include <linux/iommu.h>
 #include <linux/amd-iommu.h>
+#include <linux/psp-sev.h>
 
 #include <asm/sev.h>
 #include <asm/processor.h>
@@ -69,6 +70,15 @@ static LIST_HEAD(snp_leaked_pages_list);
 static DEFINE_SPINLOCK(snp_leaked_pages_list_lock);
 
 static unsigned long snp_nr_leaked_pages;
+
+static LIST_HEAD(snp_hv_fixed_pages_list);
+static DEFINE_SPINLOCK(snp_hv_fixed_pages_list_lock);
+
+static struct snp_hv_fixed_pages_backend hv_fixed_pages_backend;
+static int snp_hv_fixed_pages_state;
+
+#define ORDER_2MB 9
+#define PAGES_2MB 512
 
 #undef pr_fmt
 #define pr_fmt(fmt)	"SEV-SNP: " fmt
@@ -604,3 +614,196 @@ void kdump_sev_callback(void)
 	if (cc_platform_has(CC_ATTR_HOST_SEV_SNP))
 		wbinvd();
 }
+
+/* hypervisor fixed pages API interface */
+
+void snp_hypervisor_fixed_pages_notify_state_change(int state)
+{
+	struct snp_hv_fixed_pages_element *ele, *nele;
+
+	pr_debug("%s state change: %d\n", __func__, state);
+	snp_hv_fixed_pages_state = state;
+
+	switch (state) {
+	/*
+	 * SNP_INIT and snp_get_hypervisor_fixed_pages()
+	 * call and SNP_INIT_DONE has to be one atomic operation
+	 * to avoid any races with the hypervisor fixed
+	 * pages allocator calls and to ensure that any
+	 * hypervisor fixed allocated pages get marked in RMP
+	 * as such either via SNP_INIT or via SNP_PAGE_SET_STATE
+	 * interface.
+	 */
+	case SNP_INIT_IN_PROGRESS:
+		spin_lock(&snp_hv_fixed_pages_list_lock);
+		break;
+	case SNP_INIT_DONE:
+	case SNP_INIT_FAILED:
+		spin_unlock(&snp_hv_fixed_pages_list_lock);
+		break;
+	case SNP_X86_SHUTDOWN:
+		/*
+		 * SNP has been disabled globally in the platform,
+		 * HV-Fixed pages can now be reliably freed back to
+		 * the page allocator.
+		 */
+		spin_lock(&snp_hv_fixed_pages_list_lock);
+		list_for_each_entry_safe(ele, nele, &snp_hv_fixed_pages_list, list) {
+			if (ele->free) {
+				free_page((unsigned long)page_address(ele->page));
+				list_del(&ele->list);
+				kfree(ele);
+			}
+		}
+		spin_unlock(&snp_hv_fixed_pages_list_lock);
+		break;
+	case SNP_SHUTDOWN:
+		break;
+	default:
+		pr_debug("%s unknown state change %d\n", __func__, state);
+	}
+}
+EXPORT_SYMBOL_GPL(snp_hypervisor_fixed_pages_notify_state_change);
+
+/*
+ * called with snp_hv_fixed_pages_list_lock held.
+ */
+int snp_get_hypervisor_fixed_pages(struct sev_data_range_list *range_list)
+{
+	struct snp_hv_fixed_pages_element *ele;
+	struct sev_data_range *range;
+	int i = 0;
+
+	lockdep_assert_held(&snp_hv_fixed_pages_list_lock);
+
+	list_for_each_entry(ele, &snp_hv_fixed_pages_list, list) {
+		if ((i * sizeof(struct sev_data_range) +
+		     sizeof(struct sev_data_range_list)) > PAGE_SIZE)
+			return -E2BIG;
+		range = &range_list->ranges[i++];
+		/* sev_data_range base is expected to be a PFN */
+		range->base = page_to_pfn(ele->page);
+		range->page_count = ele->npages;
+	}
+	range_list->num_elements = i;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(snp_get_hypervisor_fixed_pages);
+
+struct page *snp_allocate_hypervisor_fixed_pages(int npages)
+{
+	struct snp_hv_fixed_pages_element *ele;
+	struct page *page, *pg;
+	int order, ret;
+
+	/* fast path allocation, alloc page and return if SNP not enabled */
+	if (!cc_platform_has(CC_ATTR_HOST_SEV_SNP)) {
+		order = get_order(npages * PAGE_SIZE);
+		page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
+		if (!page)
+			return NULL;
+		return page;
+	}
+
+	spin_lock(&snp_hv_fixed_pages_list_lock);
+	/* try re-using any freed pages */
+	list_for_each_entry(ele, &snp_hv_fixed_pages_list, list) {
+		/* hypervisor fixed page allocator implements exact fit policy */
+		if (ele->npages == npages && ele->free) {
+			/*
+			 * if found on the list, the range is already marked
+			 * as HV_Fixed in RMP table, return as such.
+			 */
+			ele->free = false;
+			spin_unlock(&snp_hv_fixed_pages_list_lock);
+			return ele->page;
+		}
+	}
+
+	/*
+	 * if SNP_INIT has been done, switch to invoking SNP_PAGE_SET_STATE
+	 * firmware API call to transition pages to HV_Fixed Page state.
+	 */
+	if (snp_hv_fixed_pages_state == SNP_INIT_DONE) {
+		/*
+		 * SNP_PAGE_SET_STATE command requires 2MB-aligned range base addresses.
+		 * Fixup any requests less than 2MB page size to allocate 2MB aligned
+		 * base address and free any additionally allocated pages. The fixup
+		 * is only supported for allocation requests less than 2MB.
+		 */
+		if (npages > PAGES_2MB && (npages % PAGES_2MB))
+			goto unlock;
+
+		order = get_order(npages * PAGE_SIZE);
+		if (order < ORDER_2MB) {
+			page = alloc_pages(GFP_KERNEL | __GFP_ZERO, ORDER_2MB);
+			if (!page)
+				goto unlock;
+
+			/* free pages not requested by the user */
+			split_page(page, ORDER_2MB);
+			for (pg = page + npages; pg < page + PAGES_2MB; pg++)
+				free_page((unsigned long)page_address(pg));
+		} else {
+			page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
+			if (!page)
+				goto unlock;
+		}
+
+		if (!hv_fixed_pages_backend.set_hv_fixed_pages)
+			goto free_page;
+		ret = hv_fixed_pages_backend.set_hv_fixed_pages(page_to_pfn(page), npages);
+		if (ret < 0)
+			goto free_page;
+	} else {
+		order = get_order(npages * PAGE_SIZE);
+		page = alloc_pages(GFP_KERNEL | __GFP_ZERO, order);
+		if (!page)
+			goto unlock;
+	}
+
+	ele = kzalloc(sizeof(*ele), GFP_KERNEL);
+	if (!ele)
+		goto free_page;
+	ele->page = page;
+	ele->npages = npages;
+	ele->free = false;
+	list_add_tail(&ele->list, &snp_hv_fixed_pages_list);
+
+	spin_unlock(&snp_hv_fixed_pages_list_lock);
+	return page;
+
+free_page:
+	free_page((unsigned long)page_address(page));
+unlock:
+	spin_unlock(&snp_hv_fixed_pages_list_lock);
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(snp_allocate_hypervisor_fixed_pages);
+
+void snp_free_hypervisor_fixed_pages(struct page *page)
+{
+	struct snp_hv_fixed_pages_element *ele;
+
+	if (!cc_platform_has(CC_ATTR_HOST_SEV_SNP)) {
+		free_page((unsigned long)page_address(page));
+		return;
+	}
+
+	spin_lock(&snp_hv_fixed_pages_list_lock);
+	list_for_each_entry(ele, &snp_hv_fixed_pages_list, list) {
+		if (ele->page == page) {
+			ele->free = true;
+			break;
+		}
+	}
+	spin_unlock(&snp_hv_fixed_pages_list_lock);
+}
+EXPORT_SYMBOL_GPL(snp_free_hypervisor_fixed_pages);
+
+void snp_register_hypervisor_fixed_pages_backend_op(int (*op)(u64 pfn, unsigned int pages))
+{
+	hv_fixed_pages_backend.set_hv_fixed_pages = op;
+}
+EXPORT_SYMBOL_GPL(snp_register_hypervisor_fixed_pages_backend_op);

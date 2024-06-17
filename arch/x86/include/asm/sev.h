@@ -10,6 +10,7 @@
 
 #include <linux/types.h>
 #include <linux/sev-guest.h>
+#include <linux/psp-sev.h>
 
 #include <asm/insn.h>
 #include <asm/sev-common.h>
@@ -158,6 +159,28 @@ struct snp_secrets_page_layout {
 	u8 rsvd3[3840];
 } __packed;
 
+/* Hypervisor fixed pages API interface */
+
+enum snp_hv_fixed_pages_backend_state {
+	SNP_UNINIT,
+	SNP_INIT_IN_PROGRESS,
+	SNP_INIT_FAILED,
+	SNP_INIT_DONE,
+	SNP_SHUTDOWN,
+	SNP_X86_SHUTDOWN,
+};
+
+struct snp_hv_fixed_pages_backend {
+	int (*set_hv_fixed_pages)(u64 pfn, unsigned int pages);
+};
+
+struct snp_hv_fixed_pages_element {
+	struct page *page;
+	int npages;
+	bool free;
+	struct list_head list;
+};
+
 #ifdef CONFIG_AMD_MEM_ENCRYPT
 extern void __sev_es_ist_enter(struct pt_regs *regs);
 extern void __sev_es_ist_exit(void);
@@ -273,6 +296,11 @@ int rmp_make_shared(u64 pfn, enum pg_level level);
 void snp_leak_pages(u64 pfn, unsigned int npages);
 void kdump_sev_callback(void);
 void snp_fixup_e820_tables(void);
+struct page *snp_allocate_hypervisor_fixed_pages(int npages);
+void snp_free_hypervisor_fixed_pages(struct page *page);
+void snp_register_hypervisor_fixed_pages_backend_op(int (*op)(u64 pfn, unsigned int pages));
+void snp_hypervisor_fixed_pages_notify_state_change(int state);
+int snp_get_hypervisor_fixed_pages(struct sev_data_range_list *range);
 #else
 static inline bool snp_probe_rmptable_info(void) { return false; }
 static inline int snp_lookup_rmpentry(u64 pfn, bool *assigned, int *level) { return -ENODEV; }
@@ -287,6 +315,11 @@ static inline int rmp_make_shared(u64 pfn, enum pg_level level) { return -ENODEV
 static inline void snp_leak_pages(u64 pfn, unsigned int npages) {}
 static inline void kdump_sev_callback(void) { }
 static inline void snp_fixup_e820_tables(void) {}
+static struct page *snp_allocate_hypervisor_fixed_pages(int npages) { return NULL; }
+static void snp_free_hypervisor_fixed_pages(struct page *page) {}
+static void snp_register_hypervisor_fixed_pages_backend_op(int (*op)(u64 pfn, unsigned int pages)) {}
+static void snp_hypervisor_fixed_pages_notify_state_change(int state) {}
+static int snp_get_hypervisor_fixed_pages(struct sev_data_range_list *range) {}
 #endif
 
 #endif
