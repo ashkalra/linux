@@ -685,6 +685,18 @@ struct sev_data_snp_guest_status {
 } __packed;
 
 /**
+ * struct sev_data_snp_page_set_state - SNP_PAGE_SET_STATE command params
+ *
+ * @length: length of this command buffer read by the PSP in bytes
+ * @list_paddr: system physical address of range list
+ */
+struct sev_data_snp_page_set_state {
+	u32 length;			/* In */
+	u32 rsvd;
+	u64 list_paddr;			/* In */
+} __packed;
+
+/**
  * struct sev_data_snp_page_reclaim - SNP_PAGE_RECLAIM command params
  *
  * @paddr: system physical address of page to be claimed. The 0th bit in the
