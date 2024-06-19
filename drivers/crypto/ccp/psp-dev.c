@@ -17,6 +17,7 @@
 #include "psp-dev.h"
 #include "sev-dev.h"
 #include "tee-dev.h"
+#include "sfs.h"
 #include "platform-access.h"
 #include "dbc.h"
 
@@ -190,6 +191,17 @@ static int psp_check_tee_support(struct psp_device *psp)
 	return 0;
 }
 
+static int psp_check_sfs_support(struct psp_device *psp)
+{
+	/* Check if device supports SFS feature */
+	if (!PSP_CAPABILITY(psp, SFS)) {
+		dev_dbg(psp->dev, "psp does not support SFS\n");
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
 static int psp_init(struct psp_device *psp)
 {
 	int ret;
@@ -202,6 +214,12 @@ static int psp_init(struct psp_device *psp)
 
 	if (!psp_check_tee_support(psp)) {
 		ret = tee_dev_init(psp);
+		if (ret)
+			return ret;
+	}
+
+	if (!psp_check_sfs_support(psp)) {
+		ret = sfs_dev_init(psp);
 		if (ret)
 			return ret;
 	}
@@ -305,6 +323,8 @@ void psp_dev_destroy(struct sp_device *sp)
 
 	tee_dev_destroy(psp);
 
+	sfs_dev_destroy(psp);
+
 	dbc_dev_destroy(psp);
 
 	platform_access_dev_destroy(psp);
@@ -342,6 +362,7 @@ void psp_pci_init(void)
 		return;
 
 	sev_pci_init();
+	sfs_pci_init();
 }
 
 void psp_pci_exit(void)
