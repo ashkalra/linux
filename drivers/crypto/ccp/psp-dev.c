@@ -33,8 +33,10 @@ static int psp_mailbox_poll(const void __iomem *cmdresp_reg, unsigned int *cmdre
 		if (FIELD_GET(PSP_CMDRESP_RESP, *cmdresp))
 			return 0;
 
-		if (!timeout_msecs--)
+		if (!timeout_msecs--) {
+			pr_info("cmdresp from PSP_CMDRESP_RESP register 0x%x is 0x%x\n", cmdresp_reg, *cmdresp);
 			break;
+		}
 
 		usleep_range(1000, 1100);
 	}
