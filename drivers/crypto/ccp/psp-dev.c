@@ -96,6 +96,8 @@ int psp_extended_mailbox_cmd(struct psp_device *psp, unsigned int timeout_msecs,
 		return ret;
 	} else if (FIELD_GET(PSP_CMDRESP_STS, reg)) {
 		req->header.status = FIELD_GET(PSP_CMDRESP_STS, reg);
+		print_hex_dump_debug("<-psp ", DUMP_PREFIX_OFFSET, 16, 2, req,
+				     16, false);
 		return -EIO;
 	}
 
